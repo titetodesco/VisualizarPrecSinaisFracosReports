@@ -5,7 +5,12 @@ from pyvis.network import Network
 import streamlit.components.v1 as components
 
 # Carregar diretamente do GitHub (ajuste o link se precisar)
-df = pd.read_csv("https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.csv")
+#df = pd.read_csv("https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.csv")
+# URLs dos arquivos no GitHub
+df = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
+if df is None:
+    st.info("Faça upload da planilha consolidada para iniciar.")
+    st.stop()
 
 # Esperado: colunas [HTO, Precursor, WeakSignal, Report, Text]
 
