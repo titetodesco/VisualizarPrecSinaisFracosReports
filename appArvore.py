@@ -5,7 +5,7 @@ from pyvis.network import Network
 import streamlit.components.v1 as components
 
 # Carregar diretamente do GitHub (ajuste o link se precisar)
-df = pd.read_csv("https://raw.githubusercontent.com/titetodesco/ArvorePrecursoresSinaisFracos/main/MapaTriplo_tratado.csv")
+df = pd.read_csv("https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.csv")
 
 # Esperado: colunas [HTO, Precursor, WeakSignal, Report, Text]
 
