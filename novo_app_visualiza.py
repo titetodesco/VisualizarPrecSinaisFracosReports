@@ -223,6 +223,32 @@ st.subheader("📊 Frequência de Weak Signals por Precursor e Categoria HTO")
 # Tabela
 st.dataframe(freq_table, use_container_width=True)
 
+import re
+
+# --- Limpar WeakSignals: remove o conteúdo entre parênteses
+df["WeakSignal_clean"] = df["WeakSignal"].apply(lambda x: re.sub(r"\s*\([^)]*\)", "", str(x)).strip())
+
+# --- Agrupar por HTO, Precursor e WeakSignal limpo
+freq_df = (df.groupby(["HTO","Precursor","WeakSignal_clean"])
+             .size()
+             .reset_index(name="Frequencia"))
+
+# --- Gráfico
+st.subheader("📊 Frequência de Weak Signals por Precursor (agrupado por HTO)")
+fig = px.bar(
+    freq_df,
+    x="Frequencia",
+    y="WeakSignal_clean",
+    color="HTO",
+    orientation="h",
+    hover_data=["Precursor"],
+    title="Frequência de Weak Signals por Precursor (agrupado por HTO)"
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# --- Tabela detalhada
+st.dataframe(freq_df, use_container_width=True)
+
 # Gráfico interativo
 fig = px.bar(
     freq_table,
