@@ -255,29 +255,32 @@ st.plotly_chart(fig, use_container_width=True)
 
 from io import BytesIO
 
-def to_excel_bytes(df, sheet_name="dados"):
+def to_excel_bytes(df_in: pd.DataFrame, sheet_name="dados") -> bytes:
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
+        df_in.to_excel(writer, sheet_name=sheet_name, index=False)
     bio.seek(0)
     return bio.read()
 
-# --- Download: Frequência de Weak Signals por Precursor e Categoria HTO
-st.download_button(
-    "📥 Baixar Excel (Weak Signals x Precursor + HTO)",
-    data=to_excel_bytes(freq_table, sheet_name="WS_x_Prec_HTO"),
-    file_name="freq_weak_signals_precursors.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+st.subheader("📥 Downloads em Excel")
 
-# --- Download: Frequência de Precursores por Categoria HTO
-st.download_button(
-    "📥 Baixar Excel (Precursores x HTO)",
-    data=to_excel_bytes(freq_table2, sheet_name="Prec_x_HTO"),
-    file_name="freq_precursors_hto.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+colA, colB = st.columns(2)
 
+with colA:
+    st.download_button(
+        "⬇️ Baixar WS x Precursor (com HTO)",
+        data=to_excel_bytes(freq_table, sheet_name="WS_x_Prec_HTO"),
+        file_name="freq_WS_Prec_HTO.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+with colB:
+    st.download_button(
+        "⬇️ Baixar Precursor x HTO",
+        data=to_excel_bytes(freq_table2, sheet_name="Prec_x_HTO"),
+        file_name="freq_Prec_HTO.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 # ===== 7) Treemap (alternativa visual) =====
 st.subheader("Treemap Hierárquico")
