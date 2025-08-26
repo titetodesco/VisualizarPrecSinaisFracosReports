@@ -227,16 +227,10 @@ import re
 
 # --- Limpar WeakSignal (remover valores entre parênteses no final)
 df["WeakSignal_clean"] = df["WeakSignal"].apply(
-    lambda x: re.sub(r"\s*\(\d+\.\d+\)$", "", str(x)).strip()
+    lambda x: re.sub(r"\s*\(\d+[.,]?\d*\)$", "", str(x)).strip()
 )
 
-
 # --- Agrupar por HTO, Precursor e WeakSignal limpo
-freq_df = (df.groupby(["HTO","Precursor","WeakSignal_clean"])
-             .size()
-             .reset_index(name="Frequencia"))
-
-# Frequência de WS por precursor + categoria
 freq_table = (
     df.groupby(["HTO", "Precursor", "WeakSignal_clean"])
       .size()
@@ -247,12 +241,8 @@ freq_table = (
 st.subheader("📊 Frequência de Weak Signals por Precursor e Categoria HTO")
 st.dataframe(freq_table, use_container_width=True)
 
-
 # Gráfico interativo
-import plotly.express as px
-
 st.subheader("📈 Frequência de Weak Signals por Precursor (agrupado por HTO)")
-
 fig = px.bar(
     freq_table,
     x="Freq", y="WeakSignal_clean",
@@ -262,6 +252,7 @@ fig = px.bar(
     title="Frequência de Weak Signals por Precursor e Categoria HTO"
 )
 st.plotly_chart(fig, use_container_width=True)
+
 
 
 # ===== 7) Treemap (alternativa visual) =====
