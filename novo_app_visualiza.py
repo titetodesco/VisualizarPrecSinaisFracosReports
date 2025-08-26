@@ -211,30 +211,30 @@ df["WS_clean"] = df["WeakSignal"].astype(str).apply(strip_score)
 # se quiser, também dá para limpar espaços duplicados:
 df["WS_clean"] = df["WS_clean"].str.replace(r"\s+", " ", regex=True)
 
-st.subheader("📊 Frequência de Weak Signals por Precursor")
-
-freq_df = (
-    df.groupby(["Precursor", "WS_clean"], as_index=False)
-      .agg(Frequencia=("WS_clean", "count"))
-      .sort_values(["Frequencia","Precursor","WS_clean"], ascending=[False, True, True])
+# --- Frequência WeakSignal x Precursor (com HTO)
+freq_table = (
+    df.groupby(["HTO", "Precursor", "WeakSignal"])
+      .size()
+      .reset_index(name="Freq")
 )
 
-if freq_df.empty:
-    st.info("Nenhum dado disponível com os filtros atuais.")
-else:
-    fig_bar = px.bar(
-        freq_df,
-        x="Frequencia",
-        y="WS_clean",
-        color="Precursor",
-        orientation="h",
-        title="Frequência de Weak Signals por Precursor (filtrado e sem o score)",
-        height=650
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
+st.subheader("📊 Frequência de Weak Signals por Precursor e Categoria HTO")
 
-    with st.expander("📑 Ver tabela de frequências"):
-        st.dataframe(freq_df, use_container_width=True)
+# Tabela
+st.dataframe(freq_table, use_container_width=True)
+
+# Gráfico interativo
+fig = px.bar(
+    freq_table,
+    x="Freq",
+    y="WeakSignal",
+    color="HTO",
+    orientation="h",
+    hover_data=["Precursor", "HTO"],
+    title="Frequência de Weak Signals por Precursor (agrupado por HTO)"
+)
+st.plotly_chart(fig, use_container_width=True)
+
 
 # ===== 7) Treemap (alternativa visual) =====
 st.subheader("Treemap Hierárquico")
