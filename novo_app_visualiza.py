@@ -249,14 +249,17 @@ st.dataframe(freq_table, use_container_width=True)
 
 
 # Gráfico interativo
+import plotly.express as px
+
+st.subheader("📈 Frequência de Weak Signals por Precursor (agrupado por HTO)")
+
 fig = px.bar(
     freq_table,
-    x="Freq",
-    y="WeakSignal",
+    x="Freq", y="WeakSignal_clean",
     color="HTO",
     orientation="h",
-    hover_data=["Precursor", "HTO"],
-    title="Frequência de Weak Signals por Precursor (agrupado por HTO)"
+    hover_data=["Precursor"],
+    title="Frequência de Weak Signals por Precursor e Categoria HTO"
 )
 st.plotly_chart(fig, use_container_width=True)
 
