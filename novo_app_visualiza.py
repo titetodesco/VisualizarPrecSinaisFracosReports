@@ -253,6 +253,30 @@ fig = px.bar(
 )
 st.plotly_chart(fig, use_container_width=True)
 
+from io import BytesIO
+
+def to_excel_bytes(df, sheet_name="dados"):
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    bio.seek(0)
+    return bio.read()
+
+# --- Download: Frequência de Weak Signals por Precursor e Categoria HTO
+st.download_button(
+    "📥 Baixar Excel (Weak Signals x Precursor + HTO)",
+    data=to_excel_bytes(freq_table, sheet_name="WS_x_Prec_HTO"),
+    file_name="freq_weak_signals_precursors.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# --- Download: Frequência de Precursores por Categoria HTO
+st.download_button(
+    "📥 Baixar Excel (Precursores x HTO)",
+    data=to_excel_bytes(freq_table2, sheet_name="Prec_x_HTO"),
+    file_name="freq_precursors_hto.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 
 # ===== 7) Treemap (alternativa visual) =====
