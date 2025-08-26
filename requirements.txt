@@ -1,5 +1,6 @@
-streamlit 
-pyvis 
-plotly 
-pandas 
+streamlit
+pandas
 openpyxl
+requests
+streamlit-echarts
+plotly
