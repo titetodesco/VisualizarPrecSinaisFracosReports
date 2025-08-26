@@ -231,7 +231,7 @@ df["WeakSignal_clean"] = df["WeakSignal"].apply(
 )
 
 # --- Agrupar por HTO, Precursor e WeakSignal limpo
-freq_table = (
+freq_table2 = (
     df.groupby(["HTO", "Precursor", "WeakSignal_clean"])
       .size()
       .reset_index(name="Freq")
@@ -244,7 +244,7 @@ st.dataframe(freq_table, use_container_width=True)
 # Gráfico interativo
 st.subheader("📈 Frequência de Weak Signals por Precursor (agrupado por HTO)")
 fig = px.bar(
-    freq_table,
+    freq_table2,
     x="Freq", y="WeakSignal_clean",
     color="HTO",
     orientation="h",
