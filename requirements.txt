@@ -4,3 +4,4 @@ openpyxl
 requests
 streamlit-echarts
 plotly
+xlsxwriter
