@@ -9,6 +9,7 @@ st.cache_data.clear()
 st.set_page_config(page_title="Árvore HTO → Precursores → Weak Signals", layout="wide")
 st.title("🌳 Árvore: HTO → Precursores → Weak Signals")
 
+
 # ===== 1) Fonte dos dados (XLSX no GitHub) =====
 URL_XLSX = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
 
