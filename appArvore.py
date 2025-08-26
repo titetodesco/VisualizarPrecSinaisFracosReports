@@ -172,7 +172,10 @@ options = {
     }]
 }
 
-event = st_echarts(options=options, height="650px", events=["click"])
+events = {
+    "click": "function (params) { return params; }"
+}
+event = st_echarts(options=options, height="650px", events=events)
 
 # ===== 6) Drill-down ao clicar no nó =====
 st.subheader("🔎 Detalhes do nó selecionado")
