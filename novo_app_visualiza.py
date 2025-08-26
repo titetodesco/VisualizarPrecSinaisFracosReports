@@ -197,6 +197,36 @@ if event and "name" in event:
     else:
         st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
 
+# --- Frequência Precursor x WeakSignal
+st.subheader("📊 Frequência de Weak Signals por Precursor")
+
+# Agregar frequências considerando o filtro atual de reports
+freq_df = (
+    df.groupby(["Precursor", "WeakSignal"], as_index=False)
+      .agg(Frequencia=("WeakSignal", "count"))
+      .sort_values("Frequencia", ascending=False)
+)
+
+if freq_df.empty:
+    st.info("Nenhum dado disponível com os filtros atuais.")
+else:
+    # Gráfico de barras
+    fig_bar = px.bar(
+        freq_df,
+        x="Frequencia",
+        y="WeakSignal",
+        color="Precursor",
+        orientation="h",
+        title="Frequência de Weak Signals por Precursor (filtrado)",
+        height=600
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    # Mostrar também tabela detalhada
+    with st.expander("📑 Ver tabela de frequências"):
+        st.dataframe(freq_df, use_container_width=True)
+
+
 # ===== 7) Treemap (alternativa visual) =====
 st.subheader("🧩 Treemap (alternativa)")
 # cada linha vale 1 ocorrência
