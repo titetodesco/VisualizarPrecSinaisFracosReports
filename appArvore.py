@@ -7,9 +7,11 @@ import streamlit.components.v1 as components
 # Carregar diretamente do GitHub (ajuste o link se precisar)
 #df = pd.read_csv("https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.csv")
 # URLs dos arquivos no GitHub
-df = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
-if df is None:
-    st.info("Faça upload da planilha consolidada para iniciar.")
+df_path = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
+try:
+    df = pd.read_excel(df_path)
+except Exception as e:
+    st.error(f"Erro ao carregar o arquivo: {e}")
     st.stop()
 
 # Esperado: colunas [HTO, Precursor, WeakSignal, Report, Text]
