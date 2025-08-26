@@ -197,6 +197,20 @@ if event and "name" in event:
     else:
         st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
 
+import re
+
+# --- limpar rótulos de WeakSignal (remover o "(0.60)" do final, com . ou ,)
+def strip_score(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    # remove " (n)", " (n.nn)" ou " (n,nn)" no fim
+    return re.sub(r"\s*\([0-9]+(?:[.,][0-9]+)?\)\s*$", "", s).strip()
+
+df["WS_clean"] = df["WeakSignal"].astype(str).apply(strip_score)
+
+# se quiser, também dá para limpar espaços duplicados:
+df["WS_clean"] = df["WS_clean"].str.replace(r"\s+", " ", regex=True)
+
 # --- Frequência Precursor x WeakSignal
 st.subheader("📊 Frequência de Weak Signals por Precursor")
 
@@ -228,13 +242,12 @@ else:
 
 
 # ===== 7) Treemap (alternativa visual) =====
-st.subheader("🧩 Treemap (alternativa)")
-# cada linha vale 1 ocorrência
-df_f["_one_"] = 1
+st.subheader("Treemap Hierárquico")
 fig = px.treemap(
-    df_f,
-    path=["HTO","Precursor","WeakSignal"],
-    values="_one_",
-    hover_data=["Report","Text"],
+    df,
+    path=["HTO", "Precursor", "WS_clean"],
+    values=[1]*len(df),
+    hover_data=["Report", "Text"],
+    title="HTO → Precursor → Weak Signal (agrupado, sem o score)"
 )
 st.plotly_chart(fig, use_container_width=True)
