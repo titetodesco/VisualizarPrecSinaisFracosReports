@@ -554,6 +554,203 @@ if sim_reports.empty:
 else:
     st.dataframe(sim_reports, use_container_width=True)
 
+# ================================
+# 🌳 ÁRVORE — HTO → Precursor → Weak Signal (via embeddings)
+# ================================
+from streamlit_echarts import st_echarts
+import plotly.express as px
+
+st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals")
+
+# --- 1) Monta tríades a partir dos hits por parágrafo
+# ws: pega WS limpos, por parágrafo
+_ws = (ws_hits[["idx_par","WeakSignal","Similarity","File","Paragraph","Snippet"]]
+       .dropna(subset=["idx_par"])
+       .copy())
+_ws["WeakSignal_clean"] = _ws["WeakSignal"].map(clean_ws_name)
+
+_ws = _ws[["idx_par","WeakSignal_clean","File","Paragraph","Snippet"]].drop_duplicates()
+
+# precursores por parágrafo
+_prec = (prec_hits[["idx_par","HTO","Precursor"]]
+         .dropna(subset=["idx_par","HTO","Precursor"])
+         .drop_duplicates())
+
+# tríades: HTO/Precursor + WeakSignal no mesmo parágrafo
+tri = _prec.merge(_ws, on="idx_par", how="inner")
+tri.rename(columns={"WeakSignal_clean":"WeakSignal"}, inplace=True)
+
+if tri.empty:
+    st.info("Sem tríades HTO–Precursor–Weak Signal com os limiares atuais.")
+else:
+    # --- 2) Filtros (por arquivo e frequência mínima por WS dentro do precursor)
+    cA, cB, cC = st.columns([2,2,1])
+    with cA:
+        files_sel = st.multiselect(
+            "Filtrar por arquivo (upload)",
+            sorted(tri["File"].dropna().unique().tolist()),
+            default=None
+        )
+    with cB:
+        min_freq = st.number_input("Frequência mínima (WS por precursor)", 1, 100, 1, 1)
+    with cC:
+        init_depth = st.slider("Profundidade inicial", 1, 3, 2)
+
+    tri_f = tri.copy()
+    if files_sel:
+        tri_f = tri_f[tri_f["File"].isin(files_sel)]
+
+    # aplica corte por frequência mínima no nível WS dentro de cada precursor
+    if not tri_f.empty:
+        grp = (tri_f.groupby(["HTO","Precursor","WeakSignal"], as_index=False)
+                     .agg(Freq=("idx_par","count")))
+        keep = grp[grp["Freq"] >= int(min_freq)][["HTO","Precursor","WeakSignal"]]
+        tri_f = tri_f.merge(keep, on=["HTO","Precursor","WeakSignal"], how="inner")
+
+    if tri_f.empty:
+        st.info("Sem dados após os filtros atuais.")
+    else:
+        # --- 3) Índice para drill-down e estrutura da árvore (ECharts)
+        node_index = {}  # chave_de_no -> set de índices (linhas) em tri_f
+
+        def add_index(key, rows_idx):
+            node_index.setdefault(key, set()).update(rows_idx)
+
+        # constrói dicionário hierárquico {HTO: {Precursor: {WS: [idx]}}}
+        tree_dict = {}
+        for i, r in tri_f.reset_index(drop=True).iterrows():
+            h, p, w = str(r["HTO"]), str(r["Precursor"]), str(r["WeakSignal"])
+            tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, []).append(i)
+
+        # remove ramos vazios (já deve estar tratado, mas por garantia)
+        for h in list(tree_dict.keys()):
+            for p in list(tree_dict[h].keys()):
+                if not tree_dict[h][p]:
+                    del tree_dict[h][p]
+            if not tree_dict[h]:
+                del tree_dict[h]
+
+        def make_node(name, children=None, value=None, extra=None):
+            node = {"name": name}
+            if value is not None: node["value"] = value
+            if extra is not None: node["extra"] = extra
+            if children: node["children"] = children
+            return node
+
+        def build_echarts_tree(d):
+            echarts_children = []
+            for hto, precs in sorted(d.items()):
+                prec_children = []
+                all_idx_hto = []
+                for prec, ws_dict in sorted(precs.items()):
+                    ws_children = []
+                    all_idx_prec = []
+                    for ws, idx_list in sorted(ws_dict.items()):
+                        key_ws = f"WS::{hto}::{prec}::{ws}"
+                        add_index(key_ws, idx_list)
+                        ws_children.append(make_node(
+                            ws,
+                            value=len(idx_list),
+                            extra={"type":"ws","key":key_ws}
+                        ))
+                        all_idx_prec.extend(idx_list)
+                    key_prec = f"PREC::{hto}::{prec}"
+                    add_index(key_prec, all_idx_prec)
+                    prec_children.append(make_node(
+                        prec,
+                        children=ws_children,
+                        value=len(all_idx_prec),
+                        extra={"type":"prec","key":key_prec}
+                    ))
+                    all_idx_hto.extend(all_idx_prec)
+
+                key_hto = f"HTO::{hto}"
+                add_index(key_hto, all_idx_hto)
+                echarts_children.append(make_node(
+                    hto,
+                    children=prec_children,
+                    value=len(all_idx_hto),
+                    extra={"type":"hto","key":key_hto}
+                ))
+
+            # raiz (apenas rótulo)
+            root = make_node("ROOT", children=echarts_children, value=None)
+            return root
+
+        root_data = build_echarts_tree(tree_dict)
+
+        # --- 4) Desenho da ÁRVORE (ECharts)
+        st.subheader("🌿 Árvore interativa (colapsável)")
+        options = {
+            "tooltip": {
+                "trigger": "item",
+                "triggerOn": "mousemove",
+                "formatter": """function(p) {
+                    var v = (p.value !== undefined) ? ("<br/>Freq: " + p.value) : "";
+                    return "<b>" + p.name + "</b>" + v;
+                }"""
+            },
+            "series": [{
+                "type": "tree",
+                "data": [root_data],
+                "left": "2%",
+                "right": "20%",
+                "top": "2%",
+                "bottom": "2%",
+                "symbol": "circle",
+                "symbolSize": 10,
+                "expandAndCollapse": True,
+                "initialTreeDepth": int(init_depth),
+                "animationDuration": 300,
+                "animationDurationUpdate": 300,
+                "label": {"position": "left", "verticalAlign": "middle", "align": "right", "fontSize": 12},
+                "leaves": {"label": {"position": "right", "align": "left"}},
+                "emphasis": {"focus": "descendant"},
+                "roam": True
+            }]
+        }
+
+        # IMPORTANTe: o streamlit_echarts espera um dicionário de events
+        event = st_echarts(
+            options=options,
+            height="650px",
+            events={"click": "function(params) { return params; }"}
+        )
+
+        # --- 5) Drill-down ao clicar no nó
+        st.subheader("🔎 Detalhes do nó selecionado")
+        if event and isinstance(event, dict):
+            data = event.get("data", {}) or {}
+            extra = data.get("extra", {})
+            key = extra.get("key")
+            if key and key in node_index:
+                idxs = sorted(node_index[key])
+                detail = (tri_f
+                          .reset_index(drop=True)
+                          .iloc[idxs][["HTO","Precursor","WeakSignal","File","Paragraph","Snippet"]]
+                          .copy())
+                st.write(f"**Nó:** `{event.get('name','')}` — **linhas:** {len(detail)}")
+                st.dataframe(detail, use_container_width=True)
+                st.download_button(
+                    "📥 Baixar CSV deste nó",
+                    data=detail.to_csv(index=False).encode("utf-8"),
+                    file_name="detalhes_no.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
+
+        # --- 6) Treemap alternativo (contagem 1 por ocorrência)
+        st.subheader("🧩 Treemap (alternativa)")
+        tri_f["_one_"] = 1
+        fig = px.treemap(
+            tri_f,
+            path=["HTO","Precursor","WeakSignal"],
+            values="_one_",
+            hover_data=["File","Snippet"]
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
 
 # -----------------------------------------------------------------------------
 # DOWNLOAD EXCEL
