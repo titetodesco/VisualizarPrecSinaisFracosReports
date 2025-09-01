@@ -265,6 +265,16 @@ for name, df, must in [
         st.error(f"Artefato '{name}' sem colunas esperadas: {must}")
         st.stop()
 
+with st.expander("🔍 Diagnóstico rápido dos artefatos"):
+    st.write("**Taxonomia – colunas:**", list(emb_tax.columns))
+    st.dataframe(emb_tax.head(5))
+    st.write("**Precursores – colunas:**", list(emb_prec.columns))
+    st.dataframe(emb_prec.head(5))
+    st.write("**WeakSignals – colunas:**", list(emb_ws.columns))
+    st.dataframe(emb_ws.head(5))
+    st.write("**MapaTriplo – colunas:**", list(emb_map.columns))
+    st.dataframe(emb_map.head(5))
+
 M_ws   = emb_matrix(emb_ws)
 M_prec = emb_matrix(emb_prec)
 M_tax  = emb_matrix(emb_tax)
