@@ -597,8 +597,51 @@ else:
                     for w, freq in ws_dict.items():
                         ws_nodes.append(make_node(w, value=freq))
                     prec_nodes.append(make_node(p, children=ws_nodes, value=sum(ws_dict.values())))
-                out.append(make_node(h, children_
+                out.append(make_node(h, children=prec_nodes, value=sum(sum(ws.values()) for ws in precs.values())))
+            return out
 
+        root_data = {"name": "HTO", "children": build_tree(tree_dict)}
+
+        options = {
+            "tooltip": {
+                "trigger": "item",
+                "triggerOn": "mousemove",
+                "formatter": "function(p) { return '<b>'+p.name+'</b><br/>Frequência: '+p.value; }"
+            },
+            "series": [{
+                "type": "tree",
+                "data": [root_data],
+                "left": "5%",
+                "right": "20%",
+                "top": "5%",
+                "bottom": "5%",
+                "symbol": "circle",
+                "symbolSize": 10,
+                "expandAndCollapse": True,
+                "initialTreeDepth": 3,
+                "animationDuration": 300,
+                "animationDurationUpdate": 300,
+                "label": {
+                    "position": "left",
+                    "verticalAlign": "middle",
+                    "align": "right",
+                    "fontSize": 12
+                },
+                "leaves": {
+                    "label": {"position": "right", "align": "left"}
+                },
+                "emphasis": {"focus": "descendant"},
+                "roam": True
+            }]
+        }
+
+        # ✅ Corrigido: agora `events` é dict, não lista
+        event = st_echarts(options=options, height="700px", events={"click": "function(params) { return params; }"})
+
+        # Drilldown
+        st.subheader("🔎 Detalhes do nó selecionado")
+        if event and "name" in event:
+            st.write(f"**Nó selecionado:** `{event['name']}` — Frequência: {event.get('value', 0)}")
 
 
 
