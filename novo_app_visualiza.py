@@ -555,16 +555,16 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # ================================
-# 🌳 ÁRVORE — HTO → Precursor → Weak Signal (via embeddings)
+# 🌳 ÁRVORE GRÁFICA — HTO → Precursor → Weak Signal
 # ================================
 import plotly.express as px
 
-st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals")
+st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals")
 
 if prec_hits.empty or ws_hits.empty:
     st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
 else:
-    # junta hits (garantindo colunas básicas)
+    # Junta hits (já vêm com idx_par e metadados)
     join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph"]].drop_duplicates()
     join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph"]].drop_duplicates()
 
@@ -573,45 +573,38 @@ else:
     if tree_df.empty:
         st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
     else:
-        # ========= Tabela base =========
         tree_df["value"] = 1
-        st.dataframe(tree_df[["HTO","Precursor","WeakSignal_clean","File","Paragraph"]]
-                     .sort_values(["HTO","Precursor"]), use_container_width=True)
 
-        # ========= Treemap =========
-        st.subheader("🧩 Treemap — HTO → Precursor → WeakSignal")
+        # ========= Treemap Interativo =========
+        st.subheader("🧩 Treemap Interativo")
         fig_tree = px.treemap(
             tree_df,
             path=["HTO","Precursor","WeakSignal_clean"],
             values="value",
             hover_data=["File","Paragraph"],
-            title="Treemap hierárquico (WeakSignals por Precursor/HTO)"
+            title="HTO → Precursores → Weak Signals"
         )
+        fig_tree.update_traces(root_color="lightgrey")
         st.plotly_chart(fig_tree, use_container_width=True)
 
-        # ========= Sunburst =========
-        st.subheader("🌞 Sunburst — HTO → Precursor → WeakSignal")
+        # ========= Sunburst Interativo =========
+        st.subheader("🌞 Sunburst Interativo")
         fig_sun = px.sunburst(
             tree_df,
             path=["HTO","Precursor","WeakSignal_clean"],
             values="value",
             hover_data=["File","Paragraph"],
-            title="Sunburst (WeakSignals por Precursor/HTO)"
+            title="HTO → Precursores → Weak Signals"
         )
         st.plotly_chart(fig_sun, use_container_width=True)
 
-        # ========= Árvore textual colapsável =========
-        st.subheader("📂 Árvore colapsável (texto resumido)")
-        for hto in sorted(tree_df["HTO"].dropna().unique()):
-            st.markdown(f"**{hto}**")
-            tri_hto = tree_df[tree_df["HTO"] == hto]
-            for prec in sorted(tri_hto["Precursor"].dropna().unique()):
-                st.markdown(f"- {prec}")
-                ws_list = sorted(
-                    tri_hto[tri_hto["Precursor"] == prec]["WeakSignal_clean"].dropna().unique()
-                )
-                if ws_list:
-                    st.markdown("  - " + "; ".join(ws_list[:20]))
+        # ========= Drilldown Auxiliar =========
+        st.subheader("🔎 Detalhes agrupados por HTO e Precursores")
+        grouped = (tree_df.groupby(["HTO","Precursor"], as_index=False)
+                          .agg(Num_WS=("WeakSignal_clean","nunique"),
+                               Total=("value","sum")))
+        st.dataframe(grouped.sort_values(["HTO","Total"], ascending=[True,False]),
+                     use_container_width=True)
 
 
 # -----------------------------------------------------------------------------
