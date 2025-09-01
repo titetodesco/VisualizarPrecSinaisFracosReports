@@ -402,9 +402,48 @@ else:
     st.dataframe(tax_hits[["Dimensao","Fator","Subfator","_termos","Similarity","File","Paragraph","Snippet"]]
                  .head(200), use_container_width=True)
 
-# ================================
-# GRÁFICOS — TAXONOMIACP
-# ================================
+# ======== NORMALIZAÇÃO TAXONOMIA: preencher Fator a partir do Subfator ========
+# constrói um mapa Subfator -> Fator a partir do parquet (onde houver Fator definido)
+sub2fac = (emb_tax[["Subfator", "Fator"]]
+           .dropna(subset=["Subfator", "Fator"])
+           .drop_duplicates())
+sub2fac_map = dict(zip(sub2fac["Subfator"], sub2fac["Fator"]))
+
+# preenche Fator ausente nos hits usando o mapa; se ainda ficar vazio, rotula
+tax_hits["Fator"] = tax_hits["Fator"].where(tax_hits["Fator"].notna(),
+                                            tax_hits["Subfator"].map(sub2fac_map))
+tax_hits["Fator"] = tax_hits["Fator"].fillna("—")
+
+# (opcional) também padroniza Dimensão/Subfator vazios
+tax_hits["Dimensao"] = tax_hits["Dimensao"].fillna("—")
+tax_hits["Subfator"] = tax_hits["Subfator"].fillna("—")
+
+# ======== TABELA ÚNICA de frequência (Dimensão/Fator/Subfator) ========
+st.subheader("📚 TaxonomiaCP (Dimensão/Fator/Subfator) encontrados")
+tax_freq = (tax_hits.groupby(["Dimensao","Fator","Subfator"], as_index=False)
+                     .agg(Frequencia=("idx_par","count"))
+                     .sort_values(["Dimensao","Fator","Frequencia"], ascending=[True,True,False]))
+st.dataframe(tax_freq, use_container_width=True)
+
+# Mostra a amostra de matches com termos
+st.dataframe(tax_hits[["Dimensao","Fator","Subfator","_termos","Similarity","File","Paragraph","Snippet"]]
+             .sort_values("Similarity", ascending=False)
+             .head(200),
+             use_container_width=True)
+
+# ======== Treemap ÚNICO (usa a mesma base já normalizada) ========
+st.subheader("🧩 Treemap — TaxonomiaCP (Dimensão → Fator → Subfator)")
+tax_plot = tax_hits.copy()
+tax_plot["value"] = 1  # cada ocorrência conta 1
+fig_tax_tree = px.treemap(
+    tax_plot,
+    path=["Dimensao","Fator","Subfator"],
+    values="value",
+    hover_data=["_termos"],
+    title="Treemap da TaxonomiaCP encontrada"
+)
+st.plotly_chart(fig_tax_tree, use_container_width=True)
+
 # ================================
 # GRÁFICOS — TAXONOMIACP (com saneamento)
 # ================================
