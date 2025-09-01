@@ -402,6 +402,74 @@ else:
     st.dataframe(tax_hits[["Dimensao","Fator","Subfator","_termos","Similarity","File","Paragraph","Snippet"]]
                  .head(200), use_container_width=True)
 
+# ================================
+# GRÁFICOS — TAXONOMIACP
+# ================================
+st.markdown("## 🧩 Visualizações — TaxonomiaCP (Dimensão → Fator → Subfator)")
+
+if tax_hits is None or tax_hits.empty:
+    st.info("Nenhum fator da TaxonomiaCP acima do limiar para o(s) documento(s).")
+else:
+    tax_plot = tax_hits.copy()
+    tax_plot["value"] = 1
+
+    # 1) Treemap (Dimensão → Fator → Subfator)
+    st.subheader("🌳 Treemap (Dimensão → Fator → Subfator)")
+    fig_tax_tree = px.treemap(
+        tax_plot,
+        path=["Dimensao", "Fator", "Subfator"],
+        values="value",
+        hover_data=["_termos"],
+        title="Treemap da TaxonomiaCP encontrada"
+    )
+    st.plotly_chart(fig_tax_tree, use_container_width=True)
+
+    # 2) Sunburst (Dimensão → Fator → Subfator)
+    st.subheader("🌞 Sunburst (Dimensão → Fator → Subfator)")
+    fig_tax_sun = px.sunburst(
+        tax_plot,
+        path=["Dimensao", "Fator", "Subfator"],
+        values="value",
+        hover_data=["_termos"],
+        title="Sunburst da TaxonomiaCP encontrada"
+    )
+    st.plotly_chart(fig_tax_sun, use_container_width=True)
+
+    # 3) Ranking de Subfatores (top-N)
+    st.subheader("🏷️ Top Subfatores por frequência")
+    sub_rank = (tax_plot.groupby(["Dimensao","Fator","Subfator"], as_index=False)
+                .agg(Frequencia=("value","sum"))
+                .sort_values("Frequencia", ascending=False)
+                .head(20))
+    fig_sub_bar = px.bar(
+        sub_rank,
+        x="Frequencia", y="Subfator",
+        color="Dimensao",
+        orientation="h",
+        hover_data=["Fator"],
+        title="Top Subfatores (doc atual)"
+    )
+    st.plotly_chart(fig_sub_bar, use_container_width=True)
+
+    # 4) Heatmap Dimensão × Fator (contagem de Subfatores marcados)
+    st.subheader("🔥 Heatmap — Dimensão × Fator")
+    df_hm = (tax_plot.groupby(["Dimensao","Fator"], as_index=False)
+             .agg(Qtd=("Subfator","nunique")))
+    mat_tax = (df_hm
+               .pivot(index="Fator", columns="Dimensao", values="Qtd")
+               .fillna(0)
+               .astype(int))
+    if not mat_tax.empty:
+        fig_tax_hm = px.imshow(
+            mat_tax.values,
+            labels=dict(x="Dimensão", y="Fator", color="Qtd Subfatores"),
+            x=mat_tax.columns.tolist(),
+            y=mat_tax.index.tolist(),
+            title="Qtd de Subfatores por Dimensão × Fator"
+        )
+        st.plotly_chart(fig_tax_hm, use_container_width=True)
+
+
 st.subheader("🗂️ Relatórios pregressos mais similares")
 if sim_reports.empty:
     st.info("Sem similares acima de 0.")
@@ -528,73 +596,6 @@ else:
             title="Relatórios mais similares (por similaridade máxima)"
         )
         st.plotly_chart(fig_reports, use_container_width=True)
-# ================================
-# GRÁFICOS — TAXONOMIACP
-# ================================
-st.markdown("## 🧩 Visualizações — TaxonomiaCP (Dimensão → Fator → Subfator)")
-
-if tax_hits is None or tax_hits.empty:
-    st.info("Nenhum fator da TaxonomiaCP acima do limiar para o(s) documento(s).")
-else:
-    tax_plot = tax_hits.copy()
-    tax_plot["value"] = 1
-
-    # 1) Treemap (Dimensão → Fator → Subfator)
-    st.subheader("🌳 Treemap (Dimensão → Fator → Subfator)")
-    fig_tax_tree = px.treemap(
-        tax_plot,
-        path=["Dimensao", "Fator", "Subfator"],
-        values="value",
-        hover_data=["_termos"],
-        title="Treemap da TaxonomiaCP encontrada"
-    )
-    st.plotly_chart(fig_tax_tree, use_container_width=True)
-
-    # 2) Sunburst (Dimensão → Fator → Subfator)
-    st.subheader("🌞 Sunburst (Dimensão → Fator → Subfator)")
-    fig_tax_sun = px.sunburst(
-        tax_plot,
-        path=["Dimensao", "Fator", "Subfator"],
-        values="value",
-        hover_data=["_termos"],
-        title="Sunburst da TaxonomiaCP encontrada"
-    )
-    st.plotly_chart(fig_tax_sun, use_container_width=True)
-
-    # 3) Ranking de Subfatores (top-N)
-    st.subheader("🏷️ Top Subfatores por frequência")
-    sub_rank = (tax_plot.groupby(["Dimensao","Fator","Subfator"], as_index=False)
-                .agg(Frequencia=("value","sum"))
-                .sort_values("Frequencia", ascending=False)
-                .head(20))
-    fig_sub_bar = px.bar(
-        sub_rank,
-        x="Frequencia", y="Subfator",
-        color="Dimensao",
-        orientation="h",
-        hover_data=["Fator"],
-        title="Top Subfatores (doc atual)"
-    )
-    st.plotly_chart(fig_sub_bar, use_container_width=True)
-
-    # 4) Heatmap Dimensão × Fator (contagem de Subfatores marcados)
-    st.subheader("🔥 Heatmap — Dimensão × Fator")
-    df_hm = (tax_plot.groupby(["Dimensao","Fator"], as_index=False)
-             .agg(Qtd=("Subfator","nunique")))
-    mat_tax = (df_hm
-               .pivot(index="Fator", columns="Dimensao", values="Qtd")
-               .fillna(0)
-               .astype(int))
-    if not mat_tax.empty:
-        fig_tax_hm = px.imshow(
-            mat_tax.values,
-            labels=dict(x="Dimensão", y="Fator", color="Qtd Subfatores"),
-            x=mat_tax.columns.tolist(),
-            y=mat_tax.index.tolist(),
-            title="Qtd de Subfatores por Dimensão × Fator"
-        )
-        st.plotly_chart(fig_tax_hm, use_container_width=True)
-
 
 # -----------------------------------------------------------------------------
 # DOWNLOAD EXCEL
