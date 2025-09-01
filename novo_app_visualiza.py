@@ -597,8 +597,8 @@ ws_map["origem"] = "Via WeakSignal"
 
 # unifica precursores
 tree_all = pd.concat([
-    prec_hits[["HTO","Precursor","Snippet","File","origem"]],
-    ws_map[["HTO","Precursor","WeakSignal_clean","Snippet","File","origem"]]
+    prec_hits[["HTO","Precursor","Trecho","File","origem"]],
+    ws_map[["HTO","Precursor","WeakSignal_clean","Trecho","File","origem"]]
 ], ignore_index=True)
 
 if tree_all.empty:
@@ -702,7 +702,7 @@ if event and "data" in event:
     key = extra.get("key")
     if key and key in node_index:
         idxs = sorted(node_index[key])
-        detail = tree_all.loc[idxs, ["HTO","Precursor","WeakSignal_clean","File","Snippet","origem"]].copy()
+        detail = tree_all.loc[idxs, ["HTO","Precursor","WeakSignal_clean","File","Trecho","origem"]].copy()
         st.dataframe(detail, use_container_width=True)
 
 
