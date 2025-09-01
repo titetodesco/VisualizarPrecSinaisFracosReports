@@ -1,9 +1,14 @@
 # analisa_novo_evento.py
-import io, json, re, time, numpy as np, pandas as pd, streamlit as st
+import io, json, re, time
 from pathlib import Path
+from typing import List
+
+import numpy as np
+import pandas as pd
+import streamlit as st
 import plotly.express as px
 
-# ==== PDF/DOCX readers (opcionais) ====
+# ==== PDF / DOCX readers (tenta PyMuPDF; cai para pdfminer se faltar) ====
 try:
     import fitz  # PyMuPDF
     HAVE_PYMUPDF = True
@@ -16,128 +21,141 @@ try:
 except Exception:
     HAVE_PDFMINER = False
 
-try:
-    from docx import Document
-    HAVE_DOCX = True
-except Exception:
-    HAVE_DOCX = False
-
-# ==== Embeddings ====
+from docx import Document
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # CONFIG
-# -----------------------------
+# -----------------------------------------------------------------------------
 st.set_page_config(page_title="Análise de Eventos: WS • Precursores • TaxonomiaCP", layout="wide")
-st.title("🧭 Análise de Eventos: Weak Signals • Precursores (HTO) • TaxonomiaCP")
 
-# -----------------------------
-# Sidebar – de onde vêm os artefatos?
-# -----------------------------
-st.sidebar.header("Fonte dos artefatos (.parquet / meta.json)")
+# Caminho FIXO dos artefatos no GitHub (RAW)
+REMOTE_BASE = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main"
 
-USE_REMOTE = st.sidebar.checkbox("Ler artefatos via URL (GitHub RAW)", value=True)
+# Modelo de embeddings (o mesmo usado no preparo)
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-REMOTE_BASE = st.sidebar.text_input(
-    "Base URL (RAW GitHub) – sem barra no final",
-    value=st.secrets.get("ARTIFACTS_BASE", "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main").strip(),
-    help="Formato: https://raw.githubusercontent.com/<user>/<repo>/<branch>"
-).strip()
+# Limiar padrão
+DEFAULT_THR = 0.50
 
-REMOTE_PREFIX = st.sidebar.text_input(
-    "Subpasta remota (opcional)", value="",
-    help="Deixe vazio se os .parquet estão na raiz do repositório. Ex.: 'artifacts'"
-).strip().strip("/")
-
-LOCAL_PREFIX = st.sidebar.text_input(
-    "Pasta local (opcional)", value="artifacts",
-    help="Se você comitou os .parquet no repositório da app, informe a pasta. Ex.: 'artifacts'"
-).strip().strip("/")
-
-# st.sidebar.caption("Se preferir, envie os arquivos .parquet / meta.json abaixo:")
-# uploads = st.sidebar.file_uploader("Upload (parquet/json)", type=["parquet","json"], accept_multiple_files=True)
-# _upload_map = {f.name: f for f in (uploads or [])}
-
-# -----------------------------
-# Helpers
-# -----------------------------
+# -----------------------------------------------------------------------------
+# HELPERS (normalização, leitura, embeddings, utilitários)
+# -----------------------------------------------------------------------------
 WS_PAREN_RE = re.compile(r"\s*\((?:0\.\d+|1\.0+)\)\s*$")
 def clean_ws_name(s: str) -> str:
+    """Remove ' (0.53)' do final do WeakSignal, mantendo apenas o texto."""
     if not isinstance(s, str): return ""
     return WS_PAREN_RE.sub("", s).strip()
 
-def _try_local(name: str) -> pd.DataFrame | None:
-    if not LOCAL_PREFIX:
-        return None
-    p = Path(LOCAL_PREFIX) / name
-    try:
-        if p.exists():
-            return pd.read_parquet(p, engine="pyarrow")
-    except Exception as e:
-        st.warning(f"[local] falhou ler {p}: {e}")
-    return None
+def _canon(s: str) -> str:
+    """Normaliza string para comparação: minúsculas, sem espaços/hífens/underscores."""
+    if not isinstance(s, str):
+        return ""
+    return re.sub(r"[\s_\-]+", "", s.strip().lower())
 
-def _try_remote(name: str) -> pd.DataFrame | None:
-    if not USE_REMOTE or not REMOTE_BASE:
-        return None
-    base = REMOTE_BASE.rstrip("/")
-    url = f"{base}/{name}" if not REMOTE_PREFIX else f"{base}/{REMOTE_PREFIX}/{name}"
-    try:
-        return pd.read_parquet(url, engine="pyarrow")
-    except Exception as e:
-        st.warning(f"[remoto] falhou ler {url}: {e}")
-    return None
+def normalize_taxonomia_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aceita variações como 'Dimensão', 'Sub-fator', 'terms', 'termos', etc.
+    Garante colunas-padrão: Dimensao, Fator, Subfator, _termos, _text
+    """
+    if df is None or df.empty:
+        return df
+
+    colmap = {}
+    canon = {c: _canon(c) for c in df.columns}
+
+    # Dimensao
+    alvo = None
+    for c, k in canon.items():
+        if k.startswith("dimens"):  # "dimensao", "dimensão"
+            alvo = c; break
+    if alvo: colmap[alvo] = "Dimensao"
+
+    # Fator
+    alvo = None
+    for c, k in canon.items():
+        if k == "fator" or k == "factor":
+            alvo = c; break
+    if alvo: colmap[alvo] = "Fator"
+
+    # Subfator
+    alvo = None
+    for c, k in canon.items():
+        if "sub" in k and ("fator" in k or "factor" in k):
+            alvo = c; break
+    if alvo: colmap[alvo] = "Subfator"
+
+    # _termos (pode vir como "termos", "termo", "terms", "term")
+    alvo = None
+    for c, k in canon.items():
+        if k in {"_termos","termos","termo","terms","term"}:
+            alvo = c; break
+    if alvo: colmap[alvo] = "_termos"
+
+    df = df.rename(columns=colmap)
+
+    # Completa hierarquia vazia (evita quebrar visualizações)
+    for needed in ["Dimensao", "Fator", "Subfator"]:
+        if needed not in df.columns:
+            df[needed] = ""
+
+    # Garante _termos e _text
+    if "_termos" not in df.columns:
+        df["_termos"] = (df.get("Dimensao","").astype(str) + " " +
+                         df.get("Fator","").astype(str) + " " +
+                         df.get("Subfator","").astype(str)).str.strip()
+    if "_text" not in df.columns:
+        df["_text"] = df["_termos"].astype(str)
+
+    return df
+
+def has_embedding_cols(df: pd.DataFrame) -> bool:
+    """Retorna True se existir pelo menos uma coluna 'e_0' (ou prefixo e_)."""
+    return any(c.startswith("e_") for c in df.columns)
 
 def load_artifact_df(name: str) -> pd.DataFrame:
-    # tenta local
-    if LOCAL_PREFIX:
-        p = Path(LOCAL_PREFIX) / name
-        if p.exists():
-            return pd.read_parquet(p, engine="pyarrow")
-    # tenta remoto
-    if USE_REMOTE and REMOTE_BASE:
-        base = REMOTE_BASE.rstrip("/")
-        url = f"{base}/{name}" if not REMOTE_PREFIX else f"{base}/{REMOTE_PREFIX}/{name}"
-        return pd.read_parquet(url, engine="pyarrow")
-    raise FileNotFoundError(f"Não encontrei '{name}'. Verifique URL base/pasta local.")
+    """Lê parquet remoto (GitHub RAW) com pyarrow."""
+    url = f"{REMOTE_BASE}/{name}"
+    return pd.read_parquet(url, engine="pyarrow")
 
 def load_meta() -> dict:
-    # local
-    if LOCAL_PREFIX:
-        p = Path(LOCAL_PREFIX) / "meta.json"
-        if p.exists():
-            return json.loads(p.read_text(encoding="utf-8"))
-    # remoto
-    if USE_REMOTE and REMOTE_BASE:
-        base = REMOTE_BASE.rstrip("/")
-        url = f"{base}/meta.json" if not REMOTE_PREFIX else f"{base}/{REMOTE_PREFIX}/meta.json"
+    url = f"{REMOTE_BASE}/meta.json"
+    # lê como texto -> json
+    meta_txt = pd.read_json(url, typ="series").to_json()
+    return json.loads(meta_txt)
+
+def read_pdf_bytes(file_bytes: bytes) -> str:
+    """Leitura robusta de PDF (PyMuPDF se disponível; senão pdfminer)."""
+    if HAVE_PYMUPDF:
         try:
-            return json.loads(pd.read_json(url, typ="series").to_json())
+            parts = []
+            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+                for page in doc:
+                    parts.append(page.get_text("text"))
+            return "\n".join(parts)
         except Exception:
             pass
-    # se não existir, segue sem meta
-    return {}
+    if HAVE_PDFMINER:
+        try:
+            return pdfminer_extract(io.BytesIO(file_bytes))
+        except Exception:
+            pass
+    st.error("Nenhum leitor de PDF disponível. Instale `PyMuPDF` (preferível) ou `pdfminer.six`.")
+    return ""
 
-def df_has_cols(df: pd.DataFrame, cols: list[str]) -> bool:
-    return all(c in df.columns for c in cols)
+def read_docx(file_bytes: bytes) -> str:
+    f = io.BytesIO(file_bytes)
+    doc = Document(f)
+    paras = []
+    for p in doc.paragraphs:
+        t = p.text.strip()
+        if t:
+            paras.append(t)
+    return "\n".join(paras)
 
-@st.cache_resource(show_spinner=False)
-def load_model(name: str):
-    return SentenceTransformer(name)
-
-def embed_texts(model, texts: list[str]) -> np.ndarray:
-    if not texts:
-        return np.zeros((0, 384), dtype=np.float32)
-    return model.encode(texts, batch_size=64, show_progress_bar=False, normalize_embeddings=True)
-
-def emb_matrix(df: pd.DataFrame) -> np.ndarray:
-    cols = [c for c in df.columns if c.startswith("e_")]
-    M = df[cols].to_numpy(dtype=np.float32)
-    norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-9
-    return (M / norms).astype(np.float32)
-
-def to_paragraphs(raw_text: str, min_len=25) -> list[tuple[int,str]]:
+def to_paragraphs(raw_text: str, min_len=25) -> List[tuple[int,str]]:
+    """Quebra o texto em blocos (parágrafos) minimamente longos."""
     chunks, buf = [], []
     for line in raw_text.splitlines():
         line = line.strip()
@@ -155,44 +173,20 @@ def to_paragraphs(raw_text: str, min_len=25) -> list[tuple[int,str]]:
             chunks.append(block)
     return [(i+1, ch) for i, ch in enumerate(chunks)]
 
-def read_pdf_bytes(file_bytes: bytes) -> str:
-    if HAVE_PYMUPDF:
-        try:
-            parts = []
-            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-                for page in doc:
-                    parts.append(page.get_text("text"))
-            return "\n".join(parts)
-        except Exception:
-            pass
-    if HAVE_PDFMINER:
-        try:
-            return pdfminer_extract(io.BytesIO(file_bytes))
-        except Exception:
-            pass
-    st.error("Nenhum leitor de PDF disponível. Instale `PyMuPDF` ou `pdfminer.six`.")
-    return ""
+@st.cache_resource(show_spinner=False)
+def load_model(name: str):
+    return SentenceTransformer(name)
 
-def read_docx_bytes(file_bytes: bytes) -> str:
-    if not HAVE_DOCX:
-        st.error("Pacote python-docx não instalado.")
-        return ""
-    f = io.BytesIO(file_bytes)
-    doc = Document(f)
-    paras = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-    return "\n".join(paras)
+def embed_texts(model, texts: List[str]) -> np.ndarray:
+    if not texts:
+        return np.zeros((0, 384), dtype=np.float32)  # MiniLM-L6-v2 -> 384 dims
+    return model.encode(texts, batch_size=64, show_progress_bar=False, normalize_embeddings=True)
 
-def stack_matches(sims: np.ndarray, cand_df: pd.DataFrame, label_cols: list[str], thr: float) -> pd.DataFrame:
-    hits = np.where(sims >= thr)
-    rows = []
-    for i, j in zip(*hits):
-        r = {"idx_par": int(i), "Similarity": float(sims[i, j])}
-        for c in label_cols:
-            r[c] = cand_df.iloc[j][c]
-        rows.append(r)
-    return (pd.DataFrame(rows)
-            .sort_values("Similarity", ascending=False)
-            .reset_index(drop=True))
+def emb_matrix(df: pd.DataFrame) -> np.ndarray:
+    cols = [c for c in df.columns if c.startswith("e_")]
+    M = df[cols].to_numpy(dtype=np.float32)
+    norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-9
+    return (M / norms).astype(np.float32)
 
 def to_excel_bytes(dfs: dict[str, pd.DataFrame]) -> bytes:
     bio = io.BytesIO()
@@ -202,106 +196,92 @@ def to_excel_bytes(dfs: dict[str, pd.DataFrame]) -> bytes:
     bio.seek(0)
     return bio.read()
 
-# -----------------------------
-# CARREGAR ARTEFATOS
-# -----------------------------
-with st.spinner("Carregando artefatos…"):
+def stack_matches(sims: np.ndarray, cand_df: pd.DataFrame, label_cols: List[str], thr: float) -> pd.DataFrame:
+    """Transforma matriz de similaridade (P x N) em long-form acima do limiar."""
+    hits = np.where(sims >= thr)
+    rows = []
+    for i, j in zip(*hits):
+        r = {"idx_par": int(i), "Similarity": float(sims[i, j])}
+        for c in label_cols:
+            r[c] = cand_df.iloc[j][c]
+        rows.append(r)
+    return pd.DataFrame(rows).sort_values("Similarity", ascending=False).reset_index(drop=True)
+
+# -----------------------------------------------------------------------------
+# CARREGA ARTEFATOS (remoto)
+# -----------------------------------------------------------------------------
+st.title("🧭 Análise de Eventos: Weak Signals • Precursores (HTO) • TaxonomiaCP")
+
+with st.spinner("Carregando artefatos (embeddings de dicionários e mapa)…"):
     emb_ws   = load_artifact_df("emb_weaksignals.parquet")
     emb_prec = load_artifact_df("emb_precursores.parquet")
     emb_tax  = load_artifact_df("emb_taxonomia.parquet")
     emb_map  = load_artifact_df("emb_mapatriplo.parquet")
     meta     = load_meta()
-    
-def normalize_taxonomia_cols(df: pd.DataFrame) -> pd.DataFrame:
-    # mapeia variações → padrão
-    colmap = {}
-    cols_lower = {c.lower(): c for c in df.columns}
 
-    # Dimensão
-    for key in ["dimensao", "dimensão", "dimension"]:
-        if key in cols_lower:
-            colmap[cols_lower[key]] = "Dimensao"
-            break
-
-    # Fator
-    for key in ["fator", "factor"]:
-        if key in cols_lower:
-            colmap[cols_lower[key]] = "Fator"
-            break
-
-    # Subfator
-    for key in ["subfator", "sub-fator", "subfactor", "sub-factor"]:
-        if key in cols_lower:
-            colmap[cols_lower[key]] = "Subfator"
-            break
-
-    # Termos (lista de termos usados no embedding)
-    for key in ["_termos", "termos", "termo", "terms", "term"]:
-        if key in cols_lower:
-            colmap[cols_lower[key]] = "_termos"
-            break
-
-    df = df.rename(columns=colmap)
-
-    # garante _text (se faltar, duplica de _termos)
-    if "_text" not in df.columns and "_termos" in df.columns:
-        df["_text"] = df["_termos"].astype(str)
-
-    return df
-
-# após carregar:
-emb_tax = load_artifact_df("emb_taxonomia.parquet")
-emb_tax = normalize_taxonomia_cols(emb_tax)
-
-
-# sanity check
-for name, df, must in [
-    ("weaksignals", emb_ws, ["_text","e_0"]),
-    ("precursores", emb_prec, ["HTO","Precursor","_text","e_0"]),
-    ("taxonomia",  emb_tax, ["Dimensao","Fator","Subfator","_termos","_text","e_0"]),
-    ("mapa",       emb_map, ["Report","Text","e_0"]),
-]:
-    if not df_has_cols(df, must):
-        st.error(f"Artefato '{name}' sem colunas esperadas: {must}")
+# Normalizações leves nos artefatos
+if "_text" not in emb_ws.columns:
+    # tenta achar uma coluna de texto principal
+    cand = [c for c in emb_ws.columns if c.lower() in {"_text","weaksignal","term","termo","termos"}]
+    if cand:
+        emb_ws = emb_ws.rename(columns={cand[0]: "_text"})
+    else:
+        st.error("Artefato 'weaksignals' sem coluna de texto principal. Refaça o preparo.")
         st.stop()
 
-with st.expander("🔍 Diagnóstico rápido dos artefatos"):
-    st.write("**Taxonomia – colunas:**", list(emb_tax.columns))
-    st.dataframe(emb_tax.head(5))
-    st.write("**Precursores – colunas:**", list(emb_prec.columns))
-    st.dataframe(emb_prec.head(5))
-    st.write("**WeakSignals – colunas:**", list(emb_ws.columns))
-    st.dataframe(emb_ws.head(5))
-    st.write("**MapaTriplo – colunas:**", list(emb_map.columns))
-    st.dataframe(emb_map.head(5))
+if "_text" not in emb_prec.columns:
+    if "Precursor" in emb_prec.columns:
+        emb_prec["_text"] = emb_prec["Precursor"].astype(str)
+    else:
+        st.error("Artefato 'precursores' sem coluna 'Precursor'. Refaça o preparo.")
+        st.stop()
+if "HTO" not in emb_prec.columns:
+    emb_prec["HTO"] = ""  # evita quebrar
 
+emb_tax = normalize_taxonomia_cols(emb_tax)
+
+if "_text" not in emb_map.columns and "Text" in emb_map.columns:
+    emb_map["_text"] = emb_map["Text"].astype(str)
+
+# Garante que há colunas de embeddings
+probs = []
+for name, df in [("weaksignals", emb_ws), ("precursores", emb_prec), ("taxonomia", emb_tax), ("mapatriplo", emb_map)]:
+    if not has_embedding_cols(df):
+        probs.append(name)
+if probs:
+    st.error("Artefatos sem colunas de embeddings (e_0, e_1, ...): " + ", ".join(probs))
+    st.stop()
+
+# Monta matrizes
 M_ws   = emb_matrix(emb_ws)
 M_prec = emb_matrix(emb_prec)
 M_tax  = emb_matrix(emb_tax)
 M_map  = emb_matrix(emb_map)
 
-# -----------------------------
-# PARÂMETROS
-# -----------------------------
-st.sidebar.header("Parâmetros de matching")
-thr_ws   = st.sidebar.slider("Limiar (Weak Signals)", 0.0, 0.95, 0.50, 0.01)
-thr_prec = st.sidebar.slider("Limiar (Precursores)", 0.0, 0.95, 0.50, 0.01)
+# -----------------------------------------------------------------------------
+# SIDEBAR – parâmetros
+# -----------------------------------------------------------------------------
+st.sidebar.header("Parâmetros")
+thr_ws   = st.sidebar.slider("Limiar (Weak Signals)", 0.0, 0.95, DEFAULT_THR, 0.01)
+thr_prec = st.sidebar.slider("Limiar (Precursores)", 0.0, 0.95, DEFAULT_THR, 0.01)
 thr_tax  = st.sidebar.slider("Limiar (TaxonomiaCP)", 0.0, 0.95, 0.55, 0.01)
 topk_sim_reports = st.sidebar.slider("Top-N relatórios similares", 3, 20, 8, 1)
 
-# -----------------------------
-# UPLOAD DE EVENTOS
-# -----------------------------
-st.subheader("📎 Faça upload do(s) documento(s) (PDF ou DOCX)")
+# -----------------------------------------------------------------------------
+# UPLOAD DE ARQUIVOS
+# -----------------------------------------------------------------------------
+st.subheader("📎 Faça upload do(s) documento(s) do evento (PDF ou DOCX)")
 files = st.file_uploader("Arraste e solte aqui…", type=["pdf","docx"], accept_multiple_files=True)
 
 if not files:
     st.info("Carregue pelo menos um arquivo para iniciar a análise.")
     st.stop()
 
-# -----------------------------
-# PROCESSAR ARQUIVOS
-# -----------------------------
+# -----------------------------------------------------------------------------
+# PROCESSA ARQUIVOS (parágrafos + embeddings)
+# -----------------------------------------------------------------------------
+model = load_model(MODEL_NAME)
+
 all_rows = []
 with st.spinner("Lendo e extraindo texto…"):
     for f in files:
@@ -310,49 +290,49 @@ with st.spinner("Lendo e extraindo texto…"):
         if name.lower().endswith(".pdf"):
             raw = read_pdf_bytes(data)
         else:
-            raw = read_docx_bytes(data)
+            raw = read_docx(data)
         paras = to_paragraphs(raw, min_len=25)
         for par_id, text in paras:
             all_rows.append({"File": name, "Paragraph": par_id, "Text": text})
 
 df_paras = pd.DataFrame(all_rows)
 if df_paras.empty:
-    st.warning("Não foram encontrados parágrafos válidos.")
+    st.warning("Não foram encontrados parágrafos válidos nos arquivos.")
     st.stop()
 
 with st.spinner("Gerando embeddings dos parágrafos…"):
-    model = load_model("sentence-transformers/all-MiniLM-L6-v2")
     E_doc = embed_texts(model, df_paras["Text"].astype(str).tolist())
 
-# -----------------------------
-# MATCHING
-# -----------------------------
+# -----------------------------------------------------------------------------
+# MATCHING (WS, Precursores, Taxonomia, Relatórios similares)
+# -----------------------------------------------------------------------------
 with st.spinner("Calculando similaridades…"):
-    # WS
-    S_ws = cosine_similarity(E_doc, M_ws)
+    # Weak Signals
+    S_ws = cosine_similarity(E_doc, M_ws)  # (P x W)
     ws_hits = stack_matches(S_ws, emb_ws.rename(columns={"_text":"WeakSignal"}), ["WeakSignal"], thr_ws)
     ws_hits["WeakSignal_clean"] = ws_hits["WeakSignal"].map(clean_ws_name)
 
     # Precursores
-    S_prec = cosine_similarity(E_doc, M_prec)
+    S_prec = cosine_similarity(E_doc, M_prec)  # (P x Pprec)
     prec_hits = stack_matches(S_prec, emb_prec, ["Precursor","HTO"], thr_prec)
 
     # Taxonomia
-    S_tax = cosine_similarity(E_doc, M_tax)
+    S_tax = cosine_similarity(E_doc, M_tax)  # (P x T)
     tax_hits = stack_matches(S_tax, emb_tax, ["Dimensao","Fator","Subfator","_termos"], thr_tax)
 
-    # Relatórios similares (por parágrafo do MapaTriplo)
-    S_map = cosine_similarity(E_doc, M_map)
+    # Relatórios similares (usa texto dos parágrafos vs MapaTriplo.Text)
+    S_map = cosine_similarity(E_doc, M_map)   # (P x MapRows)
     sim_map_max = S_map.max(axis=0)
-    tmp = emb_map[["Report"]].copy()
-    tmp["max_sim"] = sim_map_max
-    sim_reports = (tmp.groupby("Report", as_index=False)
-                     .agg(MaxSim=("max_sim","max"), MeanSim=("max_sim","mean"))
-                     .sort_values(["MaxSim","MeanSim"], ascending=False)
-                     .head(topk_sim_reports))
+    emb_map_reports = emb_map[["Report"]].copy()
+    emb_map_reports["max_sim"] = sim_map_max
+    sim_reports = (emb_map_reports.groupby("Report", as_index=False)
+                   .agg(MaxSim=("max_sim","max"), MeanSim=("max_sim","mean"))
+                   .sort_values(["MaxSim","MeanSim"], ascending=False)
+                   .head(topk_sim_reports))
 
 def attach_context(df_hits: pd.DataFrame, df_pars: pd.DataFrame) -> pd.DataFrame:
-    if df_hits.empty: return df_hits
+    if df_hits.empty:
+        return df_hits
     out = df_hits.merge(
         df_pars.reset_index(drop=True).reset_index().rename(columns={"index":"idx_par"}),
         on="idx_par", how="left"
@@ -363,10 +343,10 @@ ws_hits   = attach_context(ws_hits, df_paras)
 prec_hits = attach_context(prec_hits, df_paras)
 tax_hits  = attach_context(tax_hits, df_paras)
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # VISUALIZAÇÃO
-# -----------------------------
-st.success(f"Documentos: **{df_paras['File'].nunique()}** | Parágrafos: **{len(df_paras)}**")
+# -----------------------------------------------------------------------------
+st.success(f"Documentos processados: **{df_paras['File'].nunique()}** | Parágrafos: **{len(df_paras)}**")
 c1, c2, c3 = st.columns(3)
 with c1: st.metric("Weak Signals (hits)", len(ws_hits))
 with c2: st.metric("Precursores (hits)", len(prec_hits))
@@ -380,7 +360,9 @@ else:
                .agg(Frequencia=("idx_par","count"))
                .sort_values("Frequencia", ascending=False))
     st.dataframe(ws_freq, use_container_width=True)
-    st.dataframe(ws_hits[["WeakSignal","Similarity","File","Paragraph","Snippet"]].head(200), use_container_width=True)
+
+    st.dataframe(ws_hits[["WeakSignal","Similarity","File","Paragraph","Snippet"]]
+                 .head(200), use_container_width=True)
 
 st.subheader("🧩 Precursores (HTO) encontrados")
 if prec_hits.empty:
@@ -390,7 +372,9 @@ else:
                  .agg(Frequencia=("idx_par","count"))
                  .sort_values(["HTO","Frequencia"], ascending=[True,False]))
     st.dataframe(prec_freq, use_container_width=True)
-    st.dataframe(prec_hits[["HTO","Precursor","Similarity","File","Paragraph","Snippet"]].head(200), use_container_width=True)
+
+    st.dataframe(prec_hits[["HTO","Precursor","Similarity","File","Paragraph","Snippet"]]
+                 .head(200), use_container_width=True)
 
 st.subheader("📚 TaxonomiaCP (Dimensão/Fator/Subfator) encontrados")
 if tax_hits.empty:
@@ -400,6 +384,7 @@ else:
                 .agg(Frequencia=("idx_par","count"))
                 .sort_values("Frequencia", ascending=False))
     st.dataframe(tax_freq, use_container_width=True)
+
     st.dataframe(tax_hits[["Dimensao","Fator","Subfator","_termos","Similarity","File","Paragraph","Snippet"]]
                  .head(200), use_container_width=True)
 
@@ -409,17 +394,35 @@ if sim_reports.empty:
 else:
     st.dataframe(sim_reports, use_container_width=True)
 
-# Treemap rápido
-if not ws_hits.empty and not prec_hits.empty:
+# Treemap HTO → Precursor → WeakSignal (limpo)
+if not prec_hits.empty and not ws_hits.empty:
     st.subheader("🌳 Treemap (HTO → Precursor → WeakSignal)")
-    tri = (prec_hits[["idx_par","HTO","Precursor"]].drop_duplicates()
-           .merge(ws_hits[["idx_par","WeakSignal_clean"]].drop_duplicates(), on="idx_par", how="inner"))
+    join_ws   = ws_hits[["idx_par","WeakSignal_clean"]].drop_duplicates()
+    join_prec = prec_hits[["idx_par","HTO","Precursor"]].drop_duplicates()
+    tri = join_prec.merge(join_ws, on="idx_par", how="inner")
     if not tri.empty:
         tri["value"] = 1
-        fig = px.treemap(tri, path=["HTO","Precursor","WeakSignal_clean"], values="value")
+        fig = px.treemap(
+            tri,
+            path=["HTO","Precursor","WeakSignal_clean"],
+            values="value"
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-# Download Excel
+# Árvore textual compacta (opcional)
+with st.expander("Árvore colapsável (texto)"):
+    if not prec_hits.empty and not ws_hits.empty:
+        for hto in sorted(prec_hits["HTO"].dropna().unique()):
+            st.markdown(f"**{hto}**")
+            precs = sorted(prec_hits[prec_hits["HTO"]==hto]["Precursor"].dropna().unique())
+            for prec in precs[:100]:
+                ws_list = sorted(tri[(tri["HTO"]==hto) & (tri["Precursor"]==prec)]["WeakSignal_clean"].unique().tolist())
+                if ws_list:
+                    st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
+
+# -----------------------------------------------------------------------------
+# DOWNLOAD EXCEL
+# -----------------------------------------------------------------------------
 st.subheader("⬇️ Download (Excel consolidado)")
 dfs_out = {
     "WS_hits": ws_hits,
@@ -434,4 +437,4 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-st.caption("Dica: informe corretamente a URL RAW (usuário/repos/branch) ou comite os artefatos em uma pasta local (ex.: artifacts/).")
+st.caption("Use os limiares na barra lateral para equilibrar cobertura vs. precisão. Os artefatos são carregados do repositório público informado.")
