@@ -555,7 +555,7 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # ================================
-# 🌳 ÁRVORE — HTO → Precursor → Weak Signal (interativa)
+# 🌳 ÁRVORE INTERATIVA — HTO → Precursor → Weak Signal
 # ================================
 from streamlit_echarts import st_echarts
 
@@ -564,96 +564,56 @@ st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals
 if prec_hits.empty or ws_hits.empty:
     st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
 else:
-    # Junta hits: apenas parágrafos que têm ao mesmo tempo Precursor e WS
-    join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph","Snippet"]].drop_duplicates()
-    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph","Snippet"]].drop_duplicates()
+    # Junta os hits para capturar os WS ligados aos Precursores pelo idx_par
+    join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph"]].drop_duplicates()
+    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph"]].drop_duplicates()
 
     tree_df = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner")
 
     if tree_df.empty:
         st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
     else:
-        # ============================================================
-        # Construir estrutura hierárquica HTO -> Precursor -> WS
-        # ============================================================
-        node_index = {}
+        # Construir hierarquia HTO -> Precursor -> WeakSignal
+        tree_dict = {}
+        for _, row in tree_df.iterrows():
+            h = str(row["HTO"])
+            p = str(row["Precursor"])
+            w = str(row["WeakSignal_clean"])
+            tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, 0)
+            tree_dict[h][p][w] += 1  # conta frequência
 
-        def add_index(key, rows_idx):
-            node_index.setdefault(key, set()).update(rows_idx)
-
-        def make_node(name, children=None, value=None, extra=None):
+        # Funções auxiliares para montar os nós
+        def make_node(name, children=None, value=None):
             node = {"name": name}
             if value is not None:
-                node["value"] = int(value)
-            if extra is not None:
-                node["extra"] = extra
+                node["value"] = value
             if children:
                 node["children"] = children
             return node
 
-        tree_dict = {}
-        for i, r in tree_df.iterrows():
-            h = str(r["HTO"])
-            p = str(r["Precursor"])
-            w = str(r["WeakSignal_clean"])
-            tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, []).append(i)
-
-        # converter para formato echarts
-        def build_echarts_tree(tree_dict):
-            echarts_root_children = []
-            for hto, precs in sorted(tree_dict.items()):
-                prec_children = []
+        def build_tree(data):
+            nodes = []
+            for hto, precs in sorted(data.items()):
+                prec_nodes = []
                 for prec, ws_dict in sorted(precs.items()):
-                    ws_children = []
-                    for ws, idx_list in sorted(ws_dict.items()):
-                        key = f"WS::{hto}::{prec}::{ws}"
-                        add_index(key, idx_list)
-                        ws_children.append(make_node(
-                            ws,
-                            value=len(idx_list),
-                            extra={"type": "ws", "key": key}
-                        ))
-                    key_prec = f"PREC::{hto}::{prec}"
-                    all_idx = [i for ws_idxs in ws_dict.values() for i in ws_idxs]
-                    add_index(key_prec, all_idx)
-                    prec_children.append(make_node(
-                        prec,
-                        children=ws_children,
-                        value=len(all_idx),
-                        extra={"type": "prec", "key": key_prec}
-                    ))
-                key_hto = f"HTO::{hto}"
-                all_idx_hto = []
-                for ws_dict in precs.values():
-                    for idxs in ws_dict.values():
-                        all_idx_hto.extend(idxs)
-                add_index(key_hto, all_idx_hto)
-                echarts_root_children.append(make_node(
-                    hto,
-                    children=prec_children,
-                    value=len(all_idx_hto),
-                    extra={"type": "hto", "key": key_hto}
-                ))
-            root = make_node("HTO", children=echarts_root_children)
-            return root
+                    ws_nodes = [
+                        make_node(ws, value=freq) for ws, freq in sorted(ws_dict.items())
+                    ]
+                    prec_nodes.append(make_node(prec, children=ws_nodes, value=sum(ws_dict.values())))
+                nodes.append(make_node(hto, children=prec_nodes, value=sum(sum(ws.values()) for ws in precs.values())))
+            return make_node("HTO", children=nodes)
 
-        root_data = build_echarts_tree(tree_dict)
+        root_data = build_tree(tree_dict)
 
-        # ============================================================
-        # Renderizar árvore com ECharts
-        # ============================================================
-        st.subheader("🌿 Árvore Interativa (colapsável)")
-
+        # Configuração do gráfico interativo
         options = {
             "tooltip": {
                 "trigger": "item",
                 "triggerOn": "mousemove",
-                "formatter": """
-                function(p) {
+                "formatter": """function(p) {
                     var v = (p.value !== undefined) ? ("<br/>Freq: " + p.value) : "";
                     return "<b>" + p.name + "</b>" + v;
-                }
-                """
+                }"""
             },
             "series": [{
                 "type": "tree",
@@ -665,9 +625,9 @@ else:
                 "symbol": "circle",
                 "symbolSize": 10,
                 "expandAndCollapse": True,
-                "initialTreeDepth": 2,
-                "animationDuration": 300,
-                "animationDurationUpdate": 300,
+                "initialTreeDepth": 3,
+                "animationDuration": 400,
+                "animationDurationUpdate": 400,
                 "label": {
                     "position": "left",
                     "verticalAlign": "middle",
@@ -682,30 +642,14 @@ else:
             }]
         }
 
-        events = {"click": "function (params) { return params; }"}
-        event = st_echarts(options=options, height="650px", events=events)
+        st.subheader("🌿 Árvore Interativa (colapsável)")
+        event = st_echarts(options=options, height="700px", events=["click"])
 
-        # ============================================================
-        # Drill-down: detalhes ao clicar
-        # ============================================================
+        # Drilldown ao clicar em um nó
         st.subheader("🔎 Detalhes do nó selecionado")
         if event and "name" in event:
-            data = event.get("data", {}) or {}
-            extra = data.get("extra", {})
-            key = extra.get("key")
-            if key and key in node_index:
-                idxs = sorted(node_index[key])
-                detail = tree_df.loc[idxs, ["HTO","Precursor","WeakSignal_clean","File","Paragraph","Snippet"]].copy()
-                st.write(f"**Nó:** `{event['name']}` — **linhas:** {len(detail)}")
-                st.dataframe(detail, use_container_width=True)
-                st.download_button(
-                    "📥 Baixar CSV deste nó",
-                    data=detail.to_csv(index=False).encode("utf-8"),
-                    file_name="detalhes_no.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
+            st.info(f"Você clicou em: **{event['name']}**")
+
 
 
 
