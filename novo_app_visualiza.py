@@ -556,26 +556,26 @@ if not prec_hits.empty and not ws_hits.empty:
         st.plotly_chart(fig, use_container_width=True)
 
 # Árvore textual compacta (só se houver tri)
-with st.expander("Árvore colapsável (texto)"):
-    if not tri.empty:
-        for hto in sorted(tri["HTO"].dropna().unique()):
-            st.markdown(f"**{hto}**")
-            for prec in sorted(tri[tri["HTO"]==hto]["Precursor"].dropna().unique()):
-                ws_list = sorted(tri[(tri["HTO"]==hto) & (tri["Precursor"]==prec)]["WeakSignal_clean"].unique().tolist())
-                if ws_list:
-                    st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
+#with st.expander("Árvore colapsável (texto)"):
+#    if not tri.empty:
+#        for hto in sorted(tri["HTO"].dropna().unique()):
+#            st.markdown(f"**{hto}**")
+#            for prec in sorted(tri[tri["HTO"]==hto]["Precursor"].dropna().unique()):
+#                ws_list = sorted(tri[(tri["HTO"]==hto) & (tri["Precursor"]==prec)]["WeakSignal_clean"].unique().tolist())
+#                if ws_list:
+#                    st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
 
 
 # Árvore textual compacta (opcional)
-with st.expander("Árvore colapsável (texto)"):
-    if not prec_hits.empty and not ws_hits.empty:
-        for hto in sorted(prec_hits["HTO"].dropna().unique()):
-            st.markdown(f"**{hto}**")
-            precs = sorted(prec_hits[prec_hits["HTO"]==hto]["Precursor"].dropna().unique())
-            for prec in precs[:100]:
-                ws_list = sorted(tri[(tri["HTO"]==hto) & (tri["Precursor"]==prec)]["WeakSignal_clean"].unique().tolist())
-                if ws_list:
-                    st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
+#with st.expander("Árvore colapsável (texto)"):
+#    if not prec_hits.empty and not ws_hits.empty:
+#        for hto in sorted(prec_hits["HTO"].dropna().unique()):
+#            st.markdown(f"**{hto}**")
+#            precs = sorted(prec_hits[prec_hits["HTO"]==hto]["Precursor"].dropna().unique())
+#            for prec in precs[:100]:
+#                ws_list = sorted(tri[(tri["HTO"]==hto) & (tri["Precursor"]==prec)]["WeakSignal_clean"].unique().tolist())
+#                if ws_list:
+#                    st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
 
 # ================================
 # GRÁFICOS — MAPA TRÍPLICE (doc atual)
