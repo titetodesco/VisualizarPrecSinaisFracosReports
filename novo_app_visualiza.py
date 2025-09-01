@@ -446,6 +446,156 @@ with st.expander("Árvore colapsável (texto)"):
                 if ws_list:
                     st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
 
+# ================================
+# GRÁFICOS — MAPA TRÍPLICE (doc atual)
+# ================================
+st.markdown("## 📊 Visualizações — HTO → Precursor → Weak Signal")
+
+if tri is None or tri.empty:
+    st.info("Nenhuma tríade (HTO–Precursor–WeakSignal) acima dos limiares para o(s) documento(s) enviado(s).")
+else:
+    # 1) Treemap (HTO → Precursor → WS)
+    st.subheader("🌳 Treemap (HTO → Precursor → WeakSignal)")
+    tri_plot = tri.copy()
+    tri_plot["value"] = 1
+    fig_tri = px.treemap(
+        tri_plot,
+        path=["HTO", "Precursor", "WeakSignal_clean"],
+        values="value",
+        title="Treemap das tríades encontradas no(s) documento(s)"
+    )
+    st.plotly_chart(fig_tri, use_container_width=True)
+
+    # 2) Heatmap (frequência) — Precursor × WeakSignal
+    st.subheader("🔥 Heatmap — Frequência de Weak Signals por Precursor")
+    freq_pw = (tri_plot
+               .groupby(["Precursor", "WeakSignal_clean"], as_index=False)
+               .agg(Frequencia=("value", "sum")))
+    # opcional: limitar a top-N weak signals (mais frequentes) para reduzir poluição visual
+    top_ws = (freq_pw.groupby("WeakSignal_clean", as_index=False)
+              .agg(Total=("Frequencia","sum"))
+              .sort_values("Total", ascending=False)
+              .head(25)["WeakSignal_clean"].tolist())
+    freq_pw_top = freq_pw[freq_pw["WeakSignal_clean"].isin(top_ws)]
+
+    if freq_pw_top.empty:
+        st.info("Sem dados suficientes para o heatmap com top 25 WS.")
+    else:
+        mat = (freq_pw_top
+               .pivot(index="Precursor", columns="WeakSignal_clean", values="Frequencia")
+               .fillna(0)
+               .astype(int))
+        fig_hm = px.imshow(
+            mat.values,
+            labels=dict(x="Weak Signal", y="Precursor", color="Frequência"),
+            x=mat.columns.tolist(),
+            y=mat.index.tolist(),
+            title="Frequência de Weak Signals (Top-25) por Precursor"
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+
+    # 3) Sunburst (HTO → Precursor → WS)
+    st.subheader("🌞 Sunburst (HTO → Precursor → WeakSignal)")
+    fig_sun = px.sunburst(
+        tri_plot.assign(value=1),
+        path=["HTO", "Precursor", "WeakSignal_clean"],
+        values="value",
+        title="Sunburst das tríades encontradas"
+    )
+    st.plotly_chart(fig_sun, use_container_width=True)
+
+    # 4) (Opcional) Barra: top precursores por nº de WS distintos
+    st.subheader("🏷️ Top Precursores por nº de Weak Signals distintos")
+    prec_ws_count = (tri_plot.groupby(["HTO","Precursor"], as_index=False)
+                     .agg(WS_distintos=("WeakSignal_clean", lambda s: s.nunique())))
+    prec_ws_count = prec_ws_count.sort_values(["WS_distintos","HTO"], ascending=[False, True]).head(20)
+    fig_bar_prec = px.bar(
+        prec_ws_count,
+        x="WS_distintos", y="Precursor", color="HTO",
+        orientation="h",
+        title="Top precursores por variedade de Weak Signals (doc atual)"
+    )
+    st.plotly_chart(fig_bar_prec, use_container_width=True)
+
+    # 5) (Opcional) Relatórios históricos mais similares – bar (já existe tabela; só visual rápido)
+    if not sim_reports.empty:
+        st.subheader("📚 Top relatórios pregressos mais similares (visual)")
+        fig_reports = px.bar(
+            sim_reports.sort_values("MaxSim", ascending=True),
+            x="MaxSim", y="Report",
+            orientation="h",
+            hover_data=["MeanSim"],
+            title="Relatórios mais similares (por similaridade máxima)"
+        )
+        st.plotly_chart(fig_reports, use_container_width=True)
+# ================================
+# GRÁFICOS — TAXONOMIACP
+# ================================
+st.markdown("## 🧩 Visualizações — TaxonomiaCP (Dimensão → Fator → Subfator)")
+
+if tax_hits is None or tax_hits.empty:
+    st.info("Nenhum fator da TaxonomiaCP acima do limiar para o(s) documento(s).")
+else:
+    tax_plot = tax_hits.copy()
+    tax_plot["value"] = 1
+
+    # 1) Treemap (Dimensão → Fator → Subfator)
+    st.subheader("🌳 Treemap (Dimensão → Fator → Subfator)")
+    fig_tax_tree = px.treemap(
+        tax_plot,
+        path=["Dimensao", "Fator", "Subfator"],
+        values="value",
+        hover_data=["_termos"],
+        title="Treemap da TaxonomiaCP encontrada"
+    )
+    st.plotly_chart(fig_tax_tree, use_container_width=True)
+
+    # 2) Sunburst (Dimensão → Fator → Subfator)
+    st.subheader("🌞 Sunburst (Dimensão → Fator → Subfator)")
+    fig_tax_sun = px.sunburst(
+        tax_plot,
+        path=["Dimensao", "Fator", "Subfator"],
+        values="value",
+        hover_data=["_termos"],
+        title="Sunburst da TaxonomiaCP encontrada"
+    )
+    st.plotly_chart(fig_tax_sun, use_container_width=True)
+
+    # 3) Ranking de Subfatores (top-N)
+    st.subheader("🏷️ Top Subfatores por frequência")
+    sub_rank = (tax_plot.groupby(["Dimensao","Fator","Subfator"], as_index=False)
+                .agg(Frequencia=("value","sum"))
+                .sort_values("Frequencia", ascending=False)
+                .head(20))
+    fig_sub_bar = px.bar(
+        sub_rank,
+        x="Frequencia", y="Subfator",
+        color="Dimensao",
+        orientation="h",
+        hover_data=["Fator"],
+        title="Top Subfatores (doc atual)"
+    )
+    st.plotly_chart(fig_sub_bar, use_container_width=True)
+
+    # 4) Heatmap Dimensão × Fator (contagem de Subfatores marcados)
+    st.subheader("🔥 Heatmap — Dimensão × Fator")
+    df_hm = (tax_plot.groupby(["Dimensao","Fator"], as_index=False)
+             .agg(Qtd=("Subfator","nunique")))
+    mat_tax = (df_hm
+               .pivot(index="Fator", columns="Dimensao", values="Qtd")
+               .fillna(0)
+               .astype(int))
+    if not mat_tax.empty:
+        fig_tax_hm = px.imshow(
+            mat_tax.values,
+            labels=dict(x="Dimensão", y="Fator", color="Qtd Subfatores"),
+            x=mat_tax.columns.tolist(),
+            y=mat_tax.index.tolist(),
+            title="Qtd de Subfatores por Dimensão × Fator"
+        )
+        st.plotly_chart(fig_tax_hm, use_container_width=True)
+
+
 # -----------------------------------------------------------------------------
 # DOWNLOAD EXCEL
 # -----------------------------------------------------------------------------
