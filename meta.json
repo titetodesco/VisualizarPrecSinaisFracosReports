@@ -1,0 +1,22 @@
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "created_at": "2025-09-01 14:15:09",
+  "shapes": {
+    "weaksignals": [
+      90,
+      384
+    ],
+    "precursores": [
+      67,
+      384
+    ],
+    "taxonomia": [
+      151,
+      384
+    ],
+    "mapatriplo": [
+      1937,
+      384
+    ]
+  }
+}
