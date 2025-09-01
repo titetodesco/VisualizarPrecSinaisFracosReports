@@ -564,9 +564,9 @@ st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals")
 if prec_hits.empty or ws_hits.empty:
     st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
 else:
-    # junta hits (já vêm com idx_par e Snippet anexados)
-    join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph","Snippet"]].drop_duplicates()
-    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph","Snippet"]].drop_duplicates()
+    # junta hits (garantindo colunas básicas)
+    join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph"]].drop_duplicates()
+    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph"]].drop_duplicates()
 
     tree_df = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner")
 
@@ -575,7 +575,7 @@ else:
     else:
         # ========= Tabela base =========
         tree_df["value"] = 1
-        st.dataframe(tree_df[["HTO","Precursor","WeakSignal_clean","File","Paragraph","Snippet"]]
+        st.dataframe(tree_df[["HTO","Precursor","WeakSignal_clean","File","Paragraph"]]
                      .sort_values(["HTO","Precursor"]), use_container_width=True)
 
         # ========= Treemap =========
@@ -584,7 +584,7 @@ else:
             tree_df,
             path=["HTO","Precursor","WeakSignal_clean"],
             values="value",
-            hover_data=["File","Paragraph","Snippet"],
+            hover_data=["File","Paragraph"],
             title="Treemap hierárquico (WeakSignals por Precursor/HTO)"
         )
         st.plotly_chart(fig_tree, use_container_width=True)
@@ -595,21 +595,23 @@ else:
             tree_df,
             path=["HTO","Precursor","WeakSignal_clean"],
             values="value",
-            hover_data=["File","Paragraph","Snippet"],
+            hover_data=["File","Paragraph"],
             title="Sunburst (WeakSignals por Precursor/HTO)"
         )
         st.plotly_chart(fig_sun, use_container_width=True)
 
         # ========= Árvore textual colapsável =========
         st.subheader("📂 Árvore colapsável (texto resumido)")
-        for hto in sorted(tree_df["HTO"].unique()):
+        for hto in sorted(tree_df["HTO"].dropna().unique()):
             st.markdown(f"**{hto}**")
-            for prec in sorted(tree_df[tree_df["HTO"]==hto]["Precursor"].unique()):
+            tri_hto = tree_df[tree_df["HTO"] == hto]
+            for prec in sorted(tri_hto["Precursor"].dropna().unique()):
                 st.markdown(f"- {prec}")
-                ws_list = sorted(tree_df[(tree_df["HTO"]==hto)&(tree_df["Precursor"]==prec)]["WeakSignal_clean"].unique())
+                ws_list = sorted(
+                    tri_hto[tri_hto["Precursor"] == prec]["WeakSignal_clean"].dropna().unique()
+                )
                 if ws_list:
                     st.markdown("  - " + "; ".join(ws_list[:20]))
-
 
 
 # -----------------------------------------------------------------------------
