@@ -555,93 +555,86 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # ================================
-# 🌳 ÁRVORE — HTO → Precursores → Weak Signals (via embeddings)
+# 🌳 Árvore Interativa — HTO → Precursores → Weak Signals
 # ================================
 from streamlit_echarts import st_echarts
 
 st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals")
 
-if prec_hits.empty or ws_hits.empty:
-    st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
+# --- Normalização dos hits
+ws_hits["WeakSignal_clean"] = ws_hits["WeakSignal"].astype(str).str.strip()
+prec_hits["Precursor"] = prec_hits["Precursor"].astype(str).str.strip()
+prec_hits["HTO"] = prec_hits["HTO"].astype(str).str.strip()
+
+# --- Se tiver MapaTriplo, podemos expandir (caso contrário usa só hits diretos)
+if "WeakSignal" in emb_map.columns:
+    mapa_ws_prec = emb_map[["HTO","Precursor","WeakSignal"]].dropna()
 else:
-    # Junta hits (com idx_par)
-    join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph"]].drop_duplicates()
-    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph"]].drop_duplicates()
+    mapa_ws_prec = pd.DataFrame(columns=["HTO","Precursor","WeakSignal"])
 
-    tree_df = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner")
+# --- Liga WeakSignals encontrados com seus precursores via MapaTriplo
+ws2prec = ws_hits[["WeakSignal_clean"]].merge(
+    mapa_ws_prec.rename(columns={"WeakSignal":"WeakSignal_clean"}),
+    on="WeakSignal_clean", how="left"
+)
 
-    if tree_df.empty:
-        st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
-    else:
-        # Agrupa para construir hierarquia
-        tree_dict = {}
-        for _, r in tree_df.iterrows():
-            h, p, w = r["HTO"], r["Precursor"], r["WeakSignal_clean"]
-            tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, 0)
-            tree_dict[h][p][w] += 1  # frequência
+# --- Junta com precursores encontrados diretamente
+prec_all = pd.concat([
+    prec_hits[["HTO","Precursor"]],
+    ws2prec[["HTO","Precursor"]]
+], ignore_index=True).dropna().drop_duplicates()
 
-        def make_node(name, children=None, value=None):
-            node = {"name": name}
-            if value is not None:
-                node["value"] = value
-            if children:
-                node["children"] = children
-            return node
+# --- Monta árvore hierárquica
+tree_dict = {}
+for _, row in prec_all.iterrows():
+    h, p = row["HTO"], row["Precursor"]
+    ws_list = ws2prec.query("HTO==@h and Precursor==@p")["WeakSignal_clean"].unique().tolist()
+    tree_dict.setdefault(h, {}).setdefault(p, set()).update(ws_list)
 
-        def build_tree(data):
-            out = []
-            for h, precs in data.items():
-                prec_nodes = []
-                for p, ws_dict in precs.items():
-                    ws_nodes = []
-                    for w, freq in ws_dict.items():
-                        ws_nodes.append(make_node(w, value=freq))
-                    prec_nodes.append(make_node(p, children=ws_nodes, value=sum(ws_dict.values())))
-                out.append(make_node(h, children=prec_nodes, value=sum(sum(ws.values()) for ws in precs.values())))
-            return out
+def make_node(name, children=None, value=None):
+    node = {"name": name}
+    if value is not None:
+        node["value"] = value
+    if children:
+        node["children"] = children
+    return node
 
-        root_data = {"name": "HTO", "children": build_tree(tree_dict)}
+echarts_root_children = []
+for hto, precs in sorted(tree_dict.items()):
+    prec_nodes = []
+    for prec, ws_list in sorted(precs.items()):
+        ws_nodes = [make_node(ws, value=1) for ws in sorted(ws_list)]
+        prec_nodes.append(make_node(prec, children=ws_nodes, value=len(ws_nodes)))
+    echarts_root_children.append(make_node(hto, children=prec_nodes, value=len(prec_nodes)))
 
-        options = {
-            "tooltip": {
-                "trigger": "item",
-                "triggerOn": "mousemove",
-                "formatter": "function(p) { return '<b>'+p.name+'</b><br/>Frequência: '+p.value; }"
-            },
-            "series": [{
-                "type": "tree",
-                "data": [root_data],
-                "left": "5%",
-                "right": "20%",
-                "top": "5%",
-                "bottom": "5%",
-                "symbol": "circle",
-                "symbolSize": 10,
-                "expandAndCollapse": True,
-                "initialTreeDepth": 3,
-                "animationDuration": 300,
-                "animationDurationUpdate": 300,
-                "label": {
-                    "position": "left",
-                    "verticalAlign": "middle",
-                    "align": "right",
-                    "fontSize": 12
-                },
-                "leaves": {
-                    "label": {"position": "right", "align": "left"}
-                },
-                "emphasis": {"focus": "descendant"},
-                "roam": True
-            }]
-        }
+root_data = make_node("HTO", children=echarts_root_children)
 
-        # ✅ Corrigido: agora `events` é dict, não lista
-        event = st_echarts(options=options, height="700px", events={"click": "function(params) { return params; }"})
+# --- Renderização
+options = {
+    "tooltip": {
+        "trigger": "item",
+        "formatter": "function(p){ return p.name + (p.value ? '<br/>Frequência: '+p.value : ''); }"
+    },
+    "series": [{
+        "type": "tree",
+        "data": [root_data],
+        "left": "5%",
+        "right": "20%",
+        "top": "5%",
+        "bottom": "5%",
+        "symbol": "circle",
+        "symbolSize": 10,
+        "expandAndCollapse": True,
+        "initialTreeDepth": 3,
+        "label": {"position": "left", "align": "right"},
+        "leaves": {"label": {"position": "right", "align": "left"}},
+        "roam": True
+    }]
+}
 
-        # Drilldown
-        st.subheader("🔎 Detalhes do nó selecionado")
-        if event and "name" in event:
-            st.write(f"**Nó selecionado:** `{event['name']}` — Frequência: {event.get('value', 0)}")
+st.subheader("🌿 Árvore Interativa (colapsável)")
+st_echarts(options=options, height="700px")
+
 
 
 
