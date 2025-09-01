@@ -369,7 +369,7 @@ def attach_context(df_hits: pd.DataFrame, df_pars: pd.DataFrame) -> pd.DataFrame
         df_pars.reset_index(drop=True).reset_index().rename(columns={"index":"idx_par"}),
         on="idx_par", how="left"
     )
-    return out.rename(columns={"Text":"Snippet"})
+    return out.rename(columns={"Text":"Snippet/Trecho"})
 
 ws_hits   = attach_context(ws_hits, df_paras)
 prec_hits = attach_context(prec_hits, df_paras)
