@@ -555,85 +555,146 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # ================================
-# 🌳 Árvore Interativa — HTO → Precursores → Weak Signals
+# 🌳 ÁRVORE — HTO → Precursores → Weak Signals
+# Usando hits diretos + Mapa_Triplo_tratado.xlsx (GitHub)
 # ================================
+import io
+import requests
+import pandas as pd
 from streamlit_echarts import st_echarts
 
 st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals")
 
-# --- Normalização dos hits
-ws_hits["WeakSignal_clean"] = ws_hits["WeakSignal"].astype(str).str.strip()
-prec_hits["Precursor"] = prec_hits["Precursor"].astype(str).str.strip()
-prec_hits["HTO"] = prec_hits["HTO"].astype(str).str.strip()
+# ================================
+# 1) Carregar Mapa Triplo do GitHub
+# ================================
+MAPA_URL = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
 
-# --- Se tiver MapaTriplo, podemos expandir (caso contrário usa só hits diretos)
-if "WeakSignal" in emb_map.columns:
-    mapa_ws_prec = emb_map[["HTO","Precursor","WeakSignal"]].dropna()
+@st.cache_data(ttl=600, show_spinner=False)
+def load_mapa(url: str) -> pd.DataFrame:
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    bio = io.BytesIO(r.content)
+    return pd.read_excel(bio)
+
+try:
+    mapa_df = load_mapa(MAPA_URL)
+except Exception as e:
+    st.error(f"Erro ao carregar MapaTriplo: {e}")
+    st.stop()
+
+# Esperado: ['HTO','Precursor','WeakSignal','Report','Text']
+expected_cols = {"HTO","Precursor","WeakSignal"}
+if not expected_cols.issubset(mapa_df.columns):
+    st.error(f"MapaTriplo não contém colunas esperadas: {expected_cols}")
+    st.dataframe(mapa_df.head())
+    st.stop()
+
+# ================================
+# 2) Preparar dados combinados
+# ================================
+if prec_hits.empty and ws_hits.empty:
+    st.info("Nenhum Precursor ou Weak Signal encontrado no documento.")
 else:
-    mapa_ws_prec = pd.DataFrame(columns=["HTO","Precursor","WeakSignal"])
+    join_ws = ws_hits[["WeakSignal_clean","idx_par"]].drop_duplicates()
+    join_prec = prec_hits[["HTO","Precursor","idx_par"]].drop_duplicates()
 
-# --- Liga WeakSignals encontrados com seus precursores via MapaTriplo
-ws2prec = ws_hits[["WeakSignal_clean"]].merge(
-    mapa_ws_prec.rename(columns={"WeakSignal":"WeakSignal_clean"}),
-    on="WeakSignal_clean", how="left"
-)
+    # Precursores DIRETOS (do texto)
+    prec_direct = join_prec.copy()
+    prec_direct["Fonte"] = "Direto"
 
-# --- Junta com precursores encontrados diretamente
-prec_all = pd.concat([
-    prec_hits[["HTO","Precursor"]],
-    ws2prec[["HTO","Precursor"]]
-], ignore_index=True).dropna().drop_duplicates()
+    # Precursores INDIRETOS (via WeakSignal → MapaTriplo)
+    prec_indirect = []
+    for ws in join_ws["WeakSignal_clean"].unique():
+        relacionados = mapa_df[mapa_df["WeakSignal"].str.strip().str.lower() == ws.strip().lower()]
+        for _, row in relacionados.iterrows():
+            prec_indirect.append({
+                "HTO": row["HTO"],
+                "Precursor": row["Precursor"],
+                "WeakSignal_clean": ws,
+                "Fonte": "Indireto"
+            })
+    prec_indirect = pd.DataFrame(prec_indirect)
 
-# --- Monta árvore hierárquica
-tree_dict = {}
-for _, row in prec_all.iterrows():
-    h, p = row["HTO"], row["Precursor"]
-    ws_list = ws2prec.query("HTO==@h and Precursor==@p")["WeakSignal_clean"].unique().tolist()
-    tree_dict.setdefault(h, {}).setdefault(p, set()).update(ws_list)
+    # Consolidar
+    all_prec = pd.concat([prec_direct, prec_indirect], ignore_index=True)
 
-def make_node(name, children=None, value=None):
-    node = {"name": name}
-    if value is not None:
-        node["value"] = value
-    if children:
-        node["children"] = children
-    return node
+    if all_prec.empty:
+        st.warning("Não foi possível mapear Weak Signals para precursores.")
+        st.stop()
 
-echarts_root_children = []
-for hto, precs in sorted(tree_dict.items()):
-    prec_nodes = []
-    for prec, ws_list in sorted(precs.items()):
-        ws_nodes = [make_node(ws, value=1) for ws in sorted(ws_list)]
-        prec_nodes.append(make_node(prec, children=ws_nodes, value=len(ws_nodes)))
-    echarts_root_children.append(make_node(hto, children=prec_nodes, value=len(prec_nodes)))
+    # ================================
+    # 3) Construir árvore hierárquica
+    # ================================
+    def make_node(name, children=None, value=None):
+        node = {"name": name}
+        if value is not None:
+            node["value"] = int(value)
+        if children:
+            node["children"] = children
+        return node
 
-root_data = make_node("HTO", children=echarts_root_children)
+    tree_dict = {}
+    for hto in sorted(all_prec["HTO"].dropna().unique()):
+        precs = []
+        df_h = all_prec[all_prec["HTO"] == hto]
+        for prec in sorted(df_h["Precursor"].dropna().unique()):
+            ws_children = []
+            df_p = df_h[df_h["Precursor"] == prec]
+            for ws in sorted(df_p["WeakSignal_clean"].dropna().unique()):
+                ws_children.append(make_node(ws, value=len(df_p[df_p["WeakSignal_clean"] == ws])))
+            precs.append(make_node(f"{prec}", children=ws_children, value=len(df_p)))
+        tree_dict[hto] = precs
 
-# --- Renderização
-options = {
-    "tooltip": {
-        "trigger": "item",
-        "formatter": "function(p){ return p.name + (p.value ? '<br/>Frequência: '+p.value : ''); }"
-    },
-    "series": [{
-        "type": "tree",
-        "data": [root_data],
-        "left": "5%",
-        "right": "20%",
-        "top": "5%",
-        "bottom": "5%",
-        "symbol": "circle",
-        "symbolSize": 10,
-        "expandAndCollapse": True,
-        "initialTreeDepth": 3,
-        "label": {"position": "left", "align": "right"},
-        "leaves": {"label": {"position": "right", "align": "left"}},
-        "roam": True
-    }]
-}
+    root_children = [make_node(hto, children=precs, value=sum(len(c["children"]) for c in precs)) for hto, precs in tree_dict.items()]
+    root_data = make_node("HTO", children=root_children)
 
-st.subheader("🌿 Árvore Interativa (colapsável)")
-st_echarts(options=options, height="700px")
+    # ================================
+    # 4) Renderizar Árvore Interativa
+    # ================================
+    options = {
+        "tooltip": {
+            "trigger": "item",
+            "triggerOn": "mousemove",
+            "formatter": "function(p){return p.name + (p.value ? '<br/>Freq: ' + p.value : '');}"
+        },
+        "series": [{
+            "type": "tree",
+            "data": [root_data],
+            "left": "2%",
+            "right": "20%",
+            "top": "2%",
+            "bottom": "2%",
+            "symbol": "circle",
+            "symbolSize": 10,
+            "expandAndCollapse": True,
+            "initialTreeDepth": 2,
+            "animationDuration": 400,
+            "animationDurationUpdate": 500,
+            "label": {
+                "position": "left",
+                "verticalAlign": "middle",
+                "align": "right",
+                "fontSize": 12
+            },
+            "leaves": {
+                "label": {"position": "right", "align": "left"}
+            },
+            "emphasis": {"focus": "descendant"},
+            "roam": True
+        }]
+    }
+
+    st.subheader("🌿 Árvore Interativa (colapsável)")
+    st_echarts(options=options, height="700px")
+
+    # ================================
+    # 5) Tabelas resumo
+    # ================================
+    st.subheader("📊 Resumo de Precursores")
+    st.dataframe(all_prec.groupby(["HTO","Precursor","Fonte"], as_index=False)
+                 .agg(Frequencia=("WeakSignal_clean","count"))
+                 .sort_values(["HTO","Frequencia"], ascending=[True,False]))
 
 
 
