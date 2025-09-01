@@ -9,3 +9,5 @@ PyMuPDF
 pdfminer.six
 plotly
 xlsxwriter
+streamlit-echarts==0.4.0
+pyecharts==2.0.5
