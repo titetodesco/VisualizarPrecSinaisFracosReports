@@ -1,10 +1,7 @@
 # analisa_novo_evento.py
-import io, os, re, json, time
+import io, json, re, time, numpy as np, pandas as pd, streamlit as st
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import streamlit as st
 import plotly.express as px
 
 # substitua `import fitz` por:
@@ -16,31 +13,33 @@ except Exception:
 
 # fallback opcional com pdfminer (se quiser)
 try:
+    import fitz  # PyMuPDF
+    HAVE_PYMUPDF = True
+except Exception:
+    HAVE_PYMUPDF = False
+
+try:
     from pdfminer.high_level import extract_text as pdfminer_extract
     HAVE_PDFMINER = True
 except Exception:
     HAVE_PDFMINER = False
 
 def read_pdf_bytes(file_bytes: bytes) -> str:
-    """Tenta ler PDF com PyMuPDF; se não houver, tenta pdfminer; senão, avisa."""
     if HAVE_PYMUPDF:
         try:
-            text_parts = []
+            parts = []
             with fitz.open(stream=file_bytes, filetype="pdf") as doc:
                 for page in doc:
-                    text_parts.append(page.get_text("text"))
-            return "\n".join(text_parts)
-        except Exception as e:
-            pass  # cai no fallback
-
+                    parts.append(page.get_text("text"))
+            return "\n".join(parts)
+        except Exception:
+            pass
     if HAVE_PDFMINER:
         try:
             return pdfminer_extract(io.BytesIO(file_bytes))
         except Exception:
             pass
-
-    import streamlit as st
-    st.error("Nenhum leitor de PDF disponível. Instale `PyMuPDF` (ou `pdfminer.six`).")
+    st.error("Nenhum leitor de PDF disponível. Instale `PyMuPDF` ou `pdfminer.six`.")
     return ""
 
 from docx import Document
