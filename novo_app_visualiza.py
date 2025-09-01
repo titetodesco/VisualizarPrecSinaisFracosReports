@@ -196,16 +196,30 @@ def to_excel_bytes(dfs: dict[str, pd.DataFrame]) -> bytes:
     bio.seek(0)
     return bio.read()
 
-def stack_matches(sims: np.ndarray, cand_df: pd.DataFrame, label_cols: List[str], thr: float) -> pd.DataFrame:
-    """Transforma matriz de similaridade (P x N) em long-form acima do limiar."""
+def stack_matches(sims: np.ndarray, cand_df: pd.DataFrame, label_cols: list[str], thr: float) -> pd.DataFrame:
+    """
+    sims: (n_paragraphs x n_candidates)
+    cand_df: DataFrame com colunas label_cols (ex.: ["WeakSignal"])
+    thr: limiar
+    Retorna: DataFrame com colunas ["idx_par","Similarity"] + label_cols (mesmo se vazio)
+    """
     hits = np.where(sims >= thr)
+
+    # Sem hits? Retorne DF vazio com colunas esperadas (evita KeyError no sort_values)
+    if hits[0].size == 0:
+        cols = ["idx_par", "Similarity"] + label_cols
+        return pd.DataFrame(columns=cols)
+
     rows = []
     for i, j in zip(*hits):
         r = {"idx_par": int(i), "Similarity": float(sims[i, j])}
         for c in label_cols:
             r[c] = cand_df.iloc[j][c]
         rows.append(r)
-    return pd.DataFrame(rows).sort_values("Similarity", ascending=False).reset_index(drop=True)
+
+    df = pd.DataFrame(rows)
+    return df.sort_values("Similarity", ascending=False).reset_index(drop=True)
+
 
 # -----------------------------------------------------------------------------
 # CARREGA ARTEFATOS (remoto)
@@ -395,6 +409,7 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # Treemap HTO → Precursor → WeakSignal (limpo)
+tri = pd.DataFrame()  # <- garanta que tri exista mesmo se não for preenchido
 if not prec_hits.empty and not ws_hits.empty:
     st.subheader("🌳 Treemap (HTO → Precursor → WeakSignal)")
     join_ws   = ws_hits[["idx_par","WeakSignal_clean"]].drop_duplicates()
@@ -408,6 +423,17 @@ if not prec_hits.empty and not ws_hits.empty:
             values="value"
         )
         st.plotly_chart(fig, use_container_width=True)
+
+# Árvore textual compacta (só se houver tri)
+with st.expander("Árvore colapsável (texto)"):
+    if not tri.empty:
+        for hto in sorted(tri["HTO"].dropna().unique()):
+            st.markdown(f"**{hto}**")
+            for prec in sorted(tri[tri["HTO"]==hto]["Precursor"].dropna().unique()):
+                ws_list = sorted(tri[(tri["HTO"]==hto) & (tri["Precursor"]==prec)]["WeakSignal_clean"].unique().tolist())
+                if ws_list:
+                    st.markdown(f"- {prec}: " + "; ".join(ws_list[:30]))
+
 
 # Árvore textual compacta (opcional)
 with st.expander("Árvore colapsável (texto)"):
