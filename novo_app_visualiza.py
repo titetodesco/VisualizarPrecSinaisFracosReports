@@ -252,7 +252,25 @@ if "_text" not in emb_prec.columns:
 if "HTO" not in emb_prec.columns:
     emb_prec["HTO"] = ""  # evita quebrar
 
-emb_tax = normalize_taxonomia_cols(emb_tax)
+def _norm_tax_headers(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza cabeçalhos vindos do parquet/Excel para: Dimensao, Fator, Subfator, _termos."""
+    rename_map = {}
+    for c in df.columns:
+        cl = c.strip().lower()
+        if cl in {"dimensão", "dimensao"}:            rename_map[c] = "Dimensao"
+        elif cl in {"fatores", "fator"}:              rename_map[c] = "Fator"
+        elif cl in {"subfator", "subfator 1"}:        rename_map[c] = "Subfator"
+        elif cl in {"_termos","termos","bag de termos","bag of terms"}:
+            rename_map[c] = "_termos"
+        elif c == "_text":                            rename_map[c] = "_text"
+    df = df.rename(columns=rename_map)
+    for col in ["Dimensao","Fator","Subfator","_termos"]:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df
+
+# emb_tax = normalize_taxonomia_cols(emb_tax)
+emb_tax = _norm_tax_headers(emb_tax)
 
 if "_text" not in emb_map.columns and "Text" in emb_map.columns:
     emb_map["_text"] = emb_map["Text"].astype(str)
@@ -420,15 +438,60 @@ else:
     tax_freq = (tax_hits.groupby(["Dimensao","Fator","Subfator"], as_index=False)
                 .agg(Frequencia=("idx_par","count"))
                 .sort_values(["Dimensao","Fator","Frequencia"], ascending=[True,True,False]))
+
+    
     st.subheader("📚 TaxonomiaCP (Dimensão/Fator/Subfator) encontrados")
+
+if tax_hits.empty:
+    st.info("Nenhum fator da Taxonomia acima do limiar.")
+else:
+    # Normaliza cabeçalhos e valores
+    tax_hits = _norm_tax_headers(tax_hits).copy()
+    for col in ["Dimensao","Fator","Subfator","_termos"]:
+        tax_hits[col] = (tax_hits[col].astype(str)
+                         .str.strip()
+                         .replace({"": np.nan, "None": np.nan, "nan": np.nan}))
+
+    # --- mapeia Subfator -> Fator e Subfator -> Dimensao usando o parquet (fonte da verdade)
+    sub2fac_map = (emb_tax[["Subfator","Fator"]]
+                   .dropna(subset=["Subfator"])
+                   .drop_duplicates()
+                   .set_index("Subfator")["Fator"].to_dict())
+
+    sub2dim_map = (emb_tax[["Subfator","Dimensao"]]
+                   .dropna(subset=["Subfator"])
+                   .drop_duplicates()
+                   .set_index("Subfator")["Dimensao"].to_dict())
+
+    # --- Reconstrói Fator/Dimensao quando vierem nulos nos hits (ocorre em match por termo)
+    tax_hits["Fator"]    = tax_hits["Fator"].fillna(tax_hits["Subfator"].map(sub2fac_map))
+    tax_hits["Dimensao"] = tax_hits["Dimensao"].fillna(tax_hits["Subfator"].map(sub2dim_map))
+
+    # Preenche qualquer resto que tenha ficado vazio (depois do mapeamento)
+    tax_hits["Fator"]    = tax_hits["Fator"].fillna("—")
+    tax_hits["Dimensao"] = tax_hits["Dimensao"].fillna("—")
+    tax_hits["Subfator"] = tax_hits["Subfator"].fillna("—")
+
+    # Base saneada para tudo
+    tax_hits_norm = tax_hits.copy()
+
+    # Frequência ÚNICA (sempre no trio Dimensao/Fator/Subfator)
+    tax_freq = (tax_hits_norm.groupby(["Dimensao","Fator","Subfator"], as_index=False)
+                .agg(Frequencia=("idx_par","count"))
+                .sort_values(["Dimensao","Fator","Frequencia"], ascending=[True,True,False]))
+
     st.dataframe(tax_freq, use_container_width=True)
 
-    st.dataframe(tax_hits[["Dimensao","Fator","Subfator","_termos","Similarity","File","Paragraph","Snippet"]]
-                 .sort_values("Similarity", ascending=False)
-                 .head(200), use_container_width=True)
+    # Amostra dos matches
+    st.dataframe(
+        tax_hits_norm[["Dimensao","Fator","Subfator","_termos","Similarity","File","Paragraph","Snippet"]]
+        .sort_values("Similarity", ascending=False)
+        .head(200),
+        use_container_width=True
+    )
 
-    # 4) Gráficos sobre a MESMA base saneada
-    tax_plot = tax_hits.copy()
+    # A partir daqui, seus gráficos podem usar tax_hits_norm
+    tax_plot = tax_hits_norm.copy()
     tax_plot["value"] = 1
 
     # Proteção: se todo mundo vira "—", evita erro do Plotly
@@ -437,12 +500,14 @@ else:
     else:
         st.subheader("🌳 Treemap (Dimensão → Fator → Subfator)")
         fig_tax_tree = px.treemap(
-            tax_plot, path=["Dimensao","Fator","Subfator"],
+            tax_plot,
+            path=["Dimensao","Fator","Subfator"],
             values="value",
             hover_data=["_termos","Similarity","File"],
             title="Treemap da TaxonomiaCP encontrada"
         )
         st.plotly_chart(fig_tax_tree, use_container_width=True)
+        
 
         st.subheader("🌞 Sunburst (Dimensão → Fator → Subfator)")
         fig_tax_sun = px.sunburst(
