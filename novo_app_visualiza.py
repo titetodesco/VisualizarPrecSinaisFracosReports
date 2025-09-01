@@ -340,9 +340,23 @@ with st.spinner("Gerando embeddings dos parágrafos…"):
 # -----------------------------------------------------------------------------
 with st.spinner("Calculando similaridades…"):
     # Weak Signals
-    S_ws = cosine_similarity(E_doc, M_ws)  # (P x W)
+    # --- WS HITS (corrigido e normalizado) ---
+    S_ws = cosine_similarity(E_doc, M_ws)
     ws_hits = stack_matches(S_ws, emb_ws.rename(columns={"_text":"WeakSignal"}), ["WeakSignal"], thr_ws)
+    
+    # limpeza: tira lixo do WeakSignal
+    ws_hits["WeakSignal"] = ws_hits["WeakSignal"].astype(str).str.strip()
     ws_hits["WeakSignal_clean"] = ws_hits["WeakSignal"].map(clean_ws_name)
+    
+    # garante consistência
+    ws_hits = ws_hits[["idx_par","Similarity","WeakSignal_clean"]].merge(
+        df_paras.reset_index(drop=True).reset_index().rename(columns={"index":"idx_par"}),
+        on="idx_par", how="left"
+    )
+    
+    # renomeia para uso downstream
+    ws_hits = ws_hits.rename(columns={"WeakSignal_clean":"WeakSignal"})
+
 
     # Precursores
     S_prec = cosine_similarity(E_doc, M_prec)  # (P x Pprec)
@@ -555,44 +569,64 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 
-
 # ================================
-# 🌳 ÁRVORE INTERATIVA — HTO → Precursor → Weak Signal
+# 🌳 ÁRVORE — HTO → Precursores → Weak Signals
 # ================================
 import requests, io
 from streamlit_echarts import st_echarts
 
-st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals (via Mapa Triplo)")
+st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals")
 
-# --- 1) Carrega planilha Mapa Triplo ---
-URL_MAPA = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
+# ------------------------------------------------
+# 1) Carrega MapaTriplo diretamente do GitHub
+# ------------------------------------------------
+MAPA_URL = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
 
-@st.cache_data(ttl=600)
-def load_mapa(url: str) -> pd.DataFrame:
+@st.cache_data(ttl=300)
+def load_mapa(url: str):
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     return pd.read_excel(io.BytesIO(r.content))
 
-mapa = load_mapa(URL_MAPA)
+mapa = load_mapa(MAPA_URL)
 
-# limpa WeakSignal da planilha também
-mapa["WeakSignal_clean"] = mapa["WeakSignal"].astype(str).map(clean_ws_name)
+# Normaliza colunas
+mapa["WeakSignal"] = mapa["WeakSignal"].astype(str).str.strip()
+mapa["Precursor"]  = mapa["Precursor"].astype(str).str.strip()
+mapa["HTO"]        = mapa["HTO"].astype(str).str.strip()
 
-# --- 2) Junta WeakSignals encontrados com o mapa ---
-if ws_hits.empty:
-    st.info("Nenhum Weak Signal encontrado no documento para montar a árvore.")
+# ------------------------------------------------
+# 2) Junta WeakSignals do documento com o mapa
+# ------------------------------------------------
+if ws_hits.empty and prec_hits.empty:
+    st.info("Nenhum Weak Signal ou Precursor encontrado para gerar a árvore.")
 else:
-    ws_found = ws_hits[["WeakSignal_clean","File","Paragraph","Snippet"]].drop_duplicates()
+    # WeakSignals encontrados no documento
+    ws_found = ws_hits[["WeakSignal","File","Paragraph","Text"]].drop_duplicates()
+    ws_found["WeakSignal"] = ws_found["WeakSignal"].astype(str).str.strip()
 
-    # junta com o mapa para obter HTO e Precursores
-    tree_df = (ws_found.merge(mapa[["HTO","Precursor","WeakSignal_clean"]],
-                              on="WeakSignal_clean", how="left")
-                        .dropna(subset=["Precursor","HTO"]))
+    # Precursores encontrados no documento
+    prec_found = prec_hits[["HTO","Precursor","File","Paragraph","Text"]].drop_duplicates()
+    prec_found["Precursor"] = prec_found["Precursor"].astype(str).str.strip()
+
+    # Relaciona WS encontrados com Precursores (via mapa)
+    ws_prec = ws_found.merge(mapa[["HTO","Precursor","WeakSignal"]],
+                             on="WeakSignal", how="left")
+
+    # Marca a origem do vínculo
+    ws_prec["origem"] = "via WeakSignal"
+    prec_found["origem"] = "direto"
+
+    # Unifica base
+    tree_df = pd.concat([prec_found, ws_prec], ignore_index=True)
+    tree_df = tree_df.dropna(subset=["Precursor","HTO"]).drop_duplicates()
 
     if tree_df.empty:
-        st.warning("Nenhum Weak Signal encontrado possui mapeamento no Mapa Triplo.")
+        st.warning("Não há vínculos suficientes para montar a árvore.")
     else:
-        # --- 3) Constrói estrutura hierárquica ---
+        # ==================================================
+        # 3) Constrói árvore hierárquica (ECharts)
+        # ==================================================
         node_index = {}
 
         def add_index(key, rows_idx):
@@ -600,44 +634,49 @@ else:
 
         def make_node(name, children=None, value=None, extra=None):
             node = {"name": name}
-            if value is not None: node["value"] = value
-            if extra is not None: node["extra"] = extra
-            if children: node["children"] = children
+            if value is not None:
+                node["value"] = int(value)
+            if extra is not None:
+                node["extra"] = extra
+            if children:
+                node["children"] = children
             return node
 
-        tree_dict = {}
-        for i, r in tree_df.iterrows():
-            h, p, w = str(r["HTO"]), str(r["Precursor"]), str(r["WeakSignal_clean"])
-            tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, []).append(i)
-
-        def build_echarts_tree(tree_dict):
+        def build_tree(df):
             echarts_root_children = []
-            for hto, precs in sorted(tree_dict.items()):
+            for hto, df_h in df.groupby("HTO"):
                 prec_children = []
-                for prec, ws_dict in sorted(precs.items()):
+                for prec, df_p in df_h.groupby("Precursor"):
                     ws_children = []
-                    for ws, idx_list in sorted(ws_dict.items()):
-                        key = f"WS::{hto}::{prec}::{ws}"
-                        add_index(key, idx_list)
-                        ws_children.append(make_node(ws, value=len(idx_list),
-                                                     extra={"type":"ws","key":key}))
+                    for ws, df_w in df_p.groupby("WeakSignal"):
+                        key_ws = f"WS::{hto}::{prec}::{ws}"
+                        idxs = df_w.index.tolist()
+                        add_index(key_ws, idxs)
+                        ws_children.append(make_node(
+                            ws, value=len(idxs),
+                            extra={"type":"ws","key":key_ws}
+                        ))
                     key_prec = f"PREC::{hto}::{prec}"
-                    all_idx = [i for ws_idxs in ws_dict.values() for i in ws_idxs]
-                    add_index(key_prec, all_idx)
-                    prec_children.append(make_node(prec, children=ws_children,
-                                                   value=len(all_idx),
-                                                   extra={"type":"prec","key":key_prec}))
+                    add_index(key_prec, df_p.index.tolist())
+                    prec_children.append(make_node(
+                        prec, children=ws_children, value=len(df_p),
+                        extra={"type":"prec","key":key_prec}
+                    ))
                 key_hto = f"HTO::{hto}"
-                all_idx_hto = [i for ws_dict in precs.values() for idxs in ws_dict.values() for i in idxs]
-                add_index(key_hto, all_idx_hto)
-                echarts_root_children.append(make_node(hto, children=prec_children,
-                                                       value=len(all_idx_hto),
-                                                       extra={"type":"hto","key":key_hto}))
+                add_index(key_hto, df_h.index.tolist())
+                echarts_root_children.append(make_node(
+                    hto, children=prec_children, value=len(df_h),
+                    extra={"type":"hto","key":key_hto}
+                ))
             return make_node("ROOT", children=echarts_root_children)
 
-        root_data = build_echarts_tree(tree_dict)
+        root_data = build_tree(tree_df)
 
-        # --- 4) Renderiza árvore ECharts ---
+        # ==================================================
+        # 4) Renderiza árvore interativa
+        # ==================================================
+        st.subheader("🌿 Árvore Interativa (colapsável)")
+
         options = {
             "tooltip": {
                 "trigger": "item",
@@ -660,28 +699,30 @@ else:
                 "initialTreeDepth": 2,
                 "animationDuration": 300,
                 "animationDurationUpdate": 300,
-                "label": {"position":"left","align":"right"},
-                "leaves": {"label":{"position":"right","align":"left"}},
+                "label": {"position":"left","align":"right","fontSize":12},
+                "leaves": {"label": {"position":"right","align":"left"}},
                 "emphasis": {"focus":"descendant"},
                 "roam": True
             }]
         }
 
-        events = {"click": "function (params) { return params; }"}
-        st.subheader("🌿 Árvore Interativa (colapsável)")
-        event = st_echarts(options=options, height="700px", events=events)
+        event = st_echarts(options=options, height="650px", events={"click":"function(p){return p;}"})
 
-        # --- 5) Drill-down ---
+        # ==================================================
+        # 5) Drilldown — Detalhes ao clicar
+        # ==================================================
         st.subheader("🔎 Detalhes do nó selecionado")
-        if event and "name" in event:
-            data = event.get("data", {}) or {}
-            extra = data.get("extra", {})
+        if event and "data" in event:
+            data = event["data"]
+            extra = data.get("extra",{})
             key = extra.get("key")
             if key and key in node_index:
                 idxs = sorted(node_index[key])
-                detail = tree_df.loc[idxs, ["HTO","Precursor","WeakSignal_clean","File","Paragraph","Snippet"]]
+                detail = tree_df.loc[idxs, ["HTO","Precursor","WeakSignal","File","Paragraph","Text","origem"]]
                 st.write(f"**Nó:** `{event['name']}` — **linhas:** {len(detail)}")
                 st.dataframe(detail, use_container_width=True)
+            else:
+                st.info("Clique em HTO, Precursor ou WeakSignal para ver detalhes.")
 
 
 
