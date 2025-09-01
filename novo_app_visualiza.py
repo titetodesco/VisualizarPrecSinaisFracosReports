@@ -405,35 +405,60 @@ else:
 # ================================
 # GRÁFICOS — TAXONOMIACP
 # ================================
+# ================================
+# GRÁFICOS — TAXONOMIACP (com saneamento)
+# ================================
 st.markdown("## 🧩 Visualizações — TaxonomiaCP (Dimensão → Fator → Subfator)")
 
 if tax_hits is None or tax_hits.empty:
     st.info("Nenhum fator da TaxonomiaCP acima do limiar para o(s) documento(s).")
 else:
+    # --- saneamento: converter para str, strip e preencher vazios
     tax_plot = tax_hits.copy()
-    tax_plot["value"] = 1
+    for col in ["Dimensao", "Fator", "Subfator"]:
+        tax_plot[col] = (
+            tax_plot[col]
+            .astype(str)
+            .str.strip()
+            .replace({"": np.nan, "None": np.nan, "nan": np.nan})
+            .fillna("—")
+        )
+
+    # Tabela de frequência (agora com Fator preenchido)
+    tax_freq = (tax_plot.groupby(["Dimensao","Fator","Subfator"], as_index=False)
+                .agg(Frequencia=("idx_par","count"))
+                .sort_values("Frequencia", ascending=False))
+    st.subheader("TaxonomiaCP (Dimensão/Fator/Subfator) encontrados")
+    st.dataframe(tax_freq, use_container_width=True)
 
     # 1) Treemap (Dimensão → Fator → Subfator)
     st.subheader("🌳 Treemap (Dimensão → Fator → Subfator)")
-    fig_tax_tree = px.treemap(
-        tax_plot,
-        path=["Dimensao", "Fator", "Subfator"],
-        values="value",
-        hover_data=["_termos"],
-        title="Treemap da TaxonomiaCP encontrada"
-    )
-    st.plotly_chart(fig_tax_tree, use_container_width=True)
+    # Plotly exige algum valor; usamos 1 por ocorrência
+    tax_plot["value"] = 1
 
-    # 2) Sunburst (Dimensão → Fator → Subfator)
-    st.subheader("🌞 Sunburst (Dimensão → Fator → Subfator)")
-    fig_tax_sun = px.sunburst(
-        tax_plot,
-        path=["Dimensao", "Fator", "Subfator"],
-        values="value",
-        hover_data=["_termos"],
-        title="Sunburst da TaxonomiaCP encontrada"
-    )
-    st.plotly_chart(fig_tax_sun, use_container_width=True)
+    # Proteção: se todo mundo virar "—" (caso extremo), evita erro
+    if tax_plot[["Dimensao","Fator","Subfator"]].nunique().sum() <= 3:
+        st.info("Taxonomia com muitos campos vazios. Ajuste os limiares ou verifique os dados.")
+    else:
+        fig_tax_tree = px.treemap(
+            tax_plot,
+            path=["Dimensao", "Fator", "Subfator"],
+            values="value",
+            hover_data=["_termos","Similarity","File"],
+            title="Treemap da TaxonomiaCP encontrada"
+        )
+        st.plotly_chart(fig_tax_tree, use_container_width=True)
+
+        # 2) Sunburst (Dimensão → Fator → Subfator)
+        st.subheader("🌞 Sunburst (Dimensão → Fator → Subfator)")
+        fig_tax_sun = px.sunburst(
+            tax_plot,
+            path=["Dimensao", "Fator", "Subfator"],
+            values="value",
+            hover_data=["_termos","Similarity","File"],
+            title="Sunburst da TaxonomiaCP encontrada"
+        )
+        st.plotly_chart(fig_tax_sun, use_container_width=True)
 
     # 3) Ranking de Subfatores (top-N)
     st.subheader("🏷️ Top Subfatores por frequência")
@@ -468,7 +493,6 @@ else:
             title="Qtd de Subfatores por Dimensão × Fator"
         )
         st.plotly_chart(fig_tax_hm, use_container_width=True)
-
 
 st.subheader("🗂️ Relatórios pregressos mais similares")
 if sim_reports.empty:
