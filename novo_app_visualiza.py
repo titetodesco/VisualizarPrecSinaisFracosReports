@@ -1,294 +1,204 @@
-import io
-import json
-import requests
+# analisa_novo_evento.py
+# ------------------------------------------------
+import re, io, json, requests
+import numpy as np
 import pandas as pd
 import streamlit as st
-from streamlit_echarts import st_echarts
-import plotly.express as px
-st.cache_data.clear()
-st.set_page_config(page_title="Árvore HTO → Precursores → Weak Signals", layout="wide")
-st.title("🌳 Árvore: HTO → Precursores → Weak Signals")
 
-# ===== 1) Fonte dos dados (XLSX no GitHub) =====
-URL_XLSX = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 
-@st.cache_data(ttl=300, show_spinner=True)
-def load_excel(url: str) -> pd.DataFrame:
-    r = requests.get(url, timeout=30)
+# Para PDF e DOCX
+import fitz  # PyMuPDF
+from docx import Document
+
+st.set_page_config(page_title="Análise ESO — WS • Precursores • Taxonomia • Relatórios", layout="wide")
+st.title("🔎 Análise Integrada de Eventos (WS • Precursores • Taxonomia • Relatórios)")
+
+# ====== URLs RAW dos artefatos (ajuste para o seu repositório!)
+BASE = "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/artifacts"
+URL_EMB_TAXO = f"{BASE}/emb_taxonomia.parquet"
+URL_EMB_PREC = f"{BASE}/emb_precursores.parquet"
+URL_EMB_WS   = f"{BASE}/emb_weaksignals.parquet"
+URL_EMB_MAPA = f"{BASE}/emb_mapatriplo.parquet"
+
+@st.cache_resource(show_spinner=False)
+def load_model():
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+@st.cache_data(show_spinner=True, ttl=3600)
+def read_parquet_from_github(url: str) -> pd.DataFrame:
+    r = requests.get(url)
     r.raise_for_status()
-    bio = io.BytesIO(r.content)
-    # Se houver várias abas, use a primeira (ou troque por sheet_name="nome_da_sua_aba")
-    return pd.read_excel(bio)
+    return pd.read_parquet(io.BytesIO(r.content))
 
+model = load_model()
+
+# ====== Carrega embeddings fixos
 try:
-    df = load_excel(URL_XLSX)
+    emb_taxo = read_parquet_from_github(URL_EMB_TAXO)
+    emb_prec = read_parquet_from_github(URL_EMB_PREC)
+    emb_ws   = read_parquet_from_github(URL_EMB_WS)
+    emb_mapa = read_parquet_from_github(URL_EMB_MAPA)
 except Exception as e:
-    st.error(f"Falha ao baixar/ler o Excel: {e}")
+    st.error(f"Erro ao baixar artefatos (.parquet). Verifique as URLs RAW.\n\n{e}")
     st.stop()
 
-# Esperado: colunas com esses nomes (já tratados anteriormente)
-# ['HTO','Precursor','WeakSignal','Report','Text']
-required = {"HTO","Precursor","WeakSignal","Report","Text"}
-missing = required - set(df.columns)
-if missing:
-    st.error(f"Planilha não contém as colunas obrigatórias: {missing}")
-    st.dataframe(df.head())
-    st.stop()
+# Separa matrizes numéricas
+def split_matrix(df: pd.DataFrame):
+    # assume que as colunas de embeddings são todas numéricas após as colunas de metadados
+    meta_cols = [c for c in df.columns if df[c].dtype == object or df[c].dtype == "O"]
+    num_cols = [c for c in df.columns if c not in meta_cols]
+    X = df[num_cols].to_numpy(dtype=np.float32)
+    return df, X, meta_cols, num_cols
 
-# ===== 2) Filtros =====
-cA, cB, cC = st.columns([2,2,1])
-with cA:
-    reports_sel = st.multiselect("Filtrar por Report", sorted(df["Report"].dropna().unique().tolist()))
-with cB:
-    min_freq = st.number_input("Frequência mínima (WS por precursor)", min_value=1, max_value=100, value=1, step=1)
-with cC:
-    init_depth = st.slider("Profundidade inicial", 1, 3, 2)
+taxo_df, X_taxo, _, _ = split_matrix(emb_taxo)
+prec_df, X_prec, _, _ = split_matrix(emb_prec)
+ws_df,   X_ws,   _, _ = split_matrix(emb_ws)
+mapa_df, X_mapa, _, _ = split_matrix(emb_mapa)
 
-df_f = df.copy()
-if reports_sel:
-    df_f = df_f[df_f["Report"].isin(reports_sel)]
+# ====== Utilidades
+def clean_ws(name: str) -> str:
+    s = str(name).strip()
+    return re.sub(r"\s*\(\s*0?\.\d+\s*\)\s*$", "", s)
 
-# ===== 3) Agregação para árvore e índice para drill-down =====
-# índice: mapeia uma chave de nó -> linhas do df_f
-node_index = {}
+def safe_sent_tokenize(text: str) -> list[str]:
+    text = re.sub(r"\r\n", "\n", text)
+    # split por parágrafo + fallback por sentenças
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    return paragraphs if paragraphs else re.split(r'(?<=[.!?])\s+', text)
 
-def add_index(key, rows_idx):
-    node_index.setdefault(key, set()).update(rows_idx)
-
-# criar dicionário hierárquico {HTO: {Precursor: {WS: [linhas]}}}
-tree_dict = {}
-for i, r in df_f.iterrows():
-    h = str(r["HTO"])
-    p = str(r["Precursor"])
-    w = str(r["WeakSignal"])
-
-    tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, []).append(i)
-
-# filtrar por frequência mínima no nível WS
-for h in list(tree_dict.keys()):
-    for p in list(tree_dict[h].keys()):
-        for w in list(tree_dict[h][p].keys()):
-            if len(tree_dict[h][p][w]) < int(min_freq):
-                del tree_dict[h][p][w]
-        if not tree_dict[h][p]:
-            del tree_dict[h][p]
-    if not tree_dict[h]:
-        del tree_dict[h]
-
-if not tree_dict:
-    st.info("Sem dados após os filtros atuais.")
-    st.stop()
-
-# ===== 4) Converter para o formato de árvore do ECharts =====
-def make_node(name, children=None, value=None, extra=None):
-    node = {"name": name}
-    if value is not None:
-        node["value"] = value
-    if extra is not None:
-        node["extra"] = extra  # guardamos metadados que usamos no click
-    if children:
-        node["children"] = children
-    return node
-
-def build_echarts_tree(tree_dict):
-    echarts_root_children = []
-    for hto, precs in sorted(tree_dict.items()):
-        prec_children = []
-        for prec, ws_dict in sorted(precs.items()):
-            ws_children = []
-            for ws, idx_list in sorted(ws_dict.items()):
-                # nó de WS: valor = frequência, extra = chave-índice para drilldown
-                key = f"WS::{hto}::{prec}::{ws}"
-                add_index(key, idx_list)
-                ws_children.append(make_node(
-                    f"{ws}",
-                    value=len(idx_list),
-                    extra={"type": "ws", "key": key}
-                ))
-            key_prec = f"PREC::{hto}::{prec}"
-            # índice do precursor (todas linhas de seus ws)
-            all_idx = [i for ws_idxs in ws_dict.values() for i in ws_idxs]
-            add_index(key_prec, all_idx)
-            prec_children.append(make_node(
-                f"{prec}",
-                children=ws_children,
-                value=len(all_idx),
-                extra={"type": "prec", "key": key_prec}
-            ))
-        key_hto = f"HTO::{hto}"
-        all_idx_hto = []
-        for prec, ws_dict in precs.items():
-            for idxs in ws_dict.values():
-                all_idx_hto.extend(idxs)
-        add_index(key_hto, all_idx_hto)
-        echarts_root_children.append(make_node(
-            f"{hto}",
-            children=prec_children,
-            value=len(all_idx_hto),
-            extra={"type": "hto", "key": key_hto}
-        ))
-    # raiz
-    root = make_node("ROOT", children=echarts_root_children, value=sum(len(v) for v in node_index.get("ROOT", [])) if "ROOT" in node_index else None)
-    return root
-
-root_data = build_echarts_tree(tree_dict)
-
-# ===== 5) Desenhar ÁRVORE ECharts =====
-st.subheader("🌿 Árvore interativa (colapsável)")
-
-options = {
-    "tooltip": {
-        "trigger": "item",
-        "triggerOn": "mousemove",
-        "formatter": """function(p) {
-            var v = (p.value !== undefined) ? ("<br/>Freq: " + p.value) : "";
-            return "<b>" + p.name + "</b>" + v;
-        }"""
-    },
-    "series": [{
-        "type": "tree",
-        "data": [root_data],
-        "left": "2%",
-        "right": "20%",
-        "top": "2%",
-        "bottom": "2%",
-        "symbol": "circle",
-        "symbolSize": 10,
-        "expandAndCollapse": True,
-        "initialTreeDepth": int(init_depth),
-        "animationDuration": 300,
-        "animationDurationUpdate": 300,
-        "label": {
-            "position": "left",
-            "verticalAlign": "middle",
-            "align": "right",
-            "fontSize": 12
-        },
-        "leaves": {
-            "label": {"position": "right", "align": "left"}
-        },
-        "emphasis": {"focus": "descendant"},
-        "roam": True  # permite pan/zoom
-    }]
-}
-
-events = {
-    "click": "function (params) { return params; }"
-}
-event = st_echarts(options=options, height="650px", events=events)
-
-# ===== 6) Drill-down ao clicar no nó =====
-st.subheader("🔎 Detalhes do nó selecionado")
-if event and "name" in event:
-    data = event.get("data", {}) or {}
-    extra = data.get("extra", {})
-    key = extra.get("key")
-    if key and key in node_index:
-        idxs = sorted(node_index[key])
-        detail = df_f.loc[idxs, ["HTO","Precursor","WeakSignal","Report","Text"]].copy()
-        st.write(f"**Nó:** `{event['name']}` — **linhas:** {len(detail)}")
-        st.dataframe(detail, use_container_width=True)
-        st.download_button(
-            "📥 Baixar CSV deste nó",
-            data=detail.to_csv(index=False).encode("utf-8"),
-            file_name="detalhes_no.csv",
-            mime="text/csv"
-        )
+def extract_text(file) -> str:
+    name = file.name.lower()
+    if name.endswith(".pdf"):
+        data = file.read()
+        doc = fitz.open(stream=data, filetype="pdf")
+        txt = "\n".join([page.get_text() for page in doc])
+        return txt
+    elif name.endswith(".docx"):
+        tmp = io.BytesIO(file.read())
+        doc = Document(tmp)
+        return "\n".join([p.text for p in doc.paragraphs])
+    elif name.endswith(".txt"):
+        return file.read().decode("utf-8", errors="ignore")
     else:
-        st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
-
-import re
-
-# --- limpar rótulos de WeakSignal (remover o "(0.60)" do final, com . ou ,)
-def strip_score(s: str) -> str:
-    if not isinstance(s, str):
         return ""
-    # remove " (n)", " (n.nn)" ou " (n,nn)" no fim
-    return re.sub(r"\s*\([0-9]+(?:[.,][0-9]+)?\)\s*$", "", s).strip()
 
-df["WS_clean"] = df["WeakSignal"].astype(str).apply(strip_score)
+def topk_sim(query_embs: np.ndarray, base_embs: np.ndarray, k=5):
+    sim = cosine_similarity(query_embs, base_embs)  # (n_query, n_base)
+    idx = np.argsort(-sim, axis=1)[:, :k]
+    val = np.take_along_axis(sim, idx, axis=1)
+    return idx, val
 
-# se quiser, também dá para limpar espaços duplicados:
-df["WS_clean"] = df["WS_clean"].str.replace(r"\s+", " ", regex=True)
+st.sidebar.header("Parâmetros")
+topk = st.sidebar.slider("Top-K por parágrafo", 3, 20, 7, 1)
+thr_ws   = st.sidebar.slider("Limite de similaridade (WS)",   0.0, 1.0, 0.55, 0.01)
+thr_prec = st.sidebar.slider("Limite de similaridade (Precursor)", 0.0, 1.0, 0.55, 0.01)
+thr_taxo = st.sidebar.slider("Limite de similaridade (Taxonomia)", 0.0, 1.0, 0.55, 0.01)
+thr_mapa = st.sidebar.slider("Limite de similaridade (Relatórios)", 0.0, 1.0, 0.60, 0.01)
 
-# --- Frequência WeakSignal x Precursor (com HTO)
-freq_table = (
-    df.groupby(["HTO", "Precursor", "WeakSignal"])
-      .size()
-      .reset_index(name="Freq")
-)
+st.write("Faça upload de um ou mais arquivos **PDF/DOCX/TXT** do evento para análise.")
+files = st.file_uploader("Arquivos do evento", type=["pdf","docx","txt"], accept_multiple_files=True)
 
-st.subheader("📊 Frequência de Weak Signals por Precursor e Categoria HTO")
+if not files:
+    st.info("Aguardando upload…")
+    st.stop()
 
-# Tabela
-st.dataframe(freq_table, use_container_width=True)
+# ====== Embeddings do documento novo
+all_paragraphs = []
+for f in files:
+    txt = extract_text(f)
+    paras = safe_sent_tokenize(txt)
+    all_paragraphs += [p for p in paras if p]
 
-import re
+if not all_paragraphs:
+    st.warning("Não encontrei texto nos arquivos enviados.")
+    st.stop()
 
-# --- Limpar WeakSignal (remover valores entre parênteses no final)
-df["WeakSignal_clean"] = df["WeakSignal"].apply(
-    lambda x: re.sub(r"\s*\(\d+[.,]?\d*\)$", "", str(x)).strip()
-)
+with st.spinner("Gerando embeddings do(s) documento(s)…"):
+    X_doc = model.encode(all_paragraphs, batch_size=64, normalize_embeddings=True)
 
-# --- Agrupar por HTO, Precursor e WeakSignal limpo
-freq_table2 = (
-    df.groupby(["HTO", "Precursor", "WeakSignal_clean"])
-      .size()
-      .reset_index(name="Freq")
-      .sort_values("Freq", ascending=False)
-)
+# ====== MATCHING WS
+idx_ws, val_ws = topk_sim(X_doc, X_ws, k=topk)
+rows_ws = []
+for i, p in enumerate(all_paragraphs):
+    for j, (col_idx) in enumerate(idx_ws[i]):
+        sim = val_ws[i, j]
+        if sim >= thr_ws:
+            ws_name = ws_df.iloc[col_idx]["WS"]
+            rows_ws.append({"ParagraphID": i, "WeakSignal": ws_name, "Similarity": float(sim), "Snippet": all_paragraphs[i][:300]})
+df_ws_hits = pd.DataFrame(rows_ws)
 
-st.subheader("📊 Frequência de Weak Signals por Precursor e Categoria HTO")
-st.dataframe(freq_table, use_container_width=True)
+# ====== MATCHING PRECURSORES
+idx_prec, val_prec = topk_sim(X_doc, X_prec, k=topk)
+rows_prec = []
+for i, p in enumerate(all_paragraphs):
+    for j, col_idx in enumerate(idx_prec[i]):
+        sim = val_prec[i, j]
+        if sim >= thr_prec:
+            hto = prec_df.iloc[col_idx]["HTO"]
+            label = prec_df.iloc[col_idx]["label"]
+            rows_prec.append({"ParagraphID": i, "HTO": hto, "Precursor": label, "Similarity": float(sim), "Snippet": all_paragraphs[i][:300]})
+df_prec_hits = pd.DataFrame(rows_prec)
 
-# Gráfico interativo
-st.subheader("📈 Frequência de Weak Signals por Precursor (agrupado por HTO)")
-fig = px.bar(
-    freq_table2,
-    x="Freq", y="WeakSignal_clean",
-    color="HTO",
-    orientation="h",
-    hover_data=["Precursor"],
-    title="Frequência de Weak Signals por Precursor e Categoria HTO"
-)
-st.plotly_chart(fig, use_container_width=True)
+# ====== MATCHING TAXONOMIA
+idx_taxo, val_taxo = topk_sim(X_doc, X_taxo, k=topk)
+rows_taxo = []
+for i, p in enumerate(all_paragraphs):
+    for j, col_idx in enumerate(idx_taxo[i]):
+        sim = val_taxo[i, j]
+        if sim >= thr_taxo:
+            taxo_text = taxo_df.iloc[col_idx]["text"]
+            rows_taxo.append({"ParagraphID": i, "Taxo": taxo_text, "Similarity": float(sim), "Snippet": all_paragraphs[i][:300]})
+df_taxo_hits = pd.DataFrame(rows_taxo)
 
-from io import BytesIO
+# ====== MATCHING RELATÓRIOS PASSADOS (MapaTriplo)
+idx_map, val_map = topk_sim(X_doc, X_mapa, k=topk)
+rows_map = []
+for i, p in enumerate(all_paragraphs):
+    for j, col_idx in enumerate(idx_map[i]):
+        sim = val_map[i, j]
+        if sim >= thr_mapa:
+            r = mapa_df.iloc[col_idx]
+            rows_map.append({
+                "ParagraphID": i, "HTO": r["HTO"], "Precursor": r["Precursor"],
+                "WeakSignal": r["WeakSignal"], "Report": r["Report"],
+                "Similarity": float(sim), "TextSimilar": r["Text"][:300],
+                "SnippetNew": all_paragraphs[i][:300]
+            })
+df_mapa_hits = pd.DataFrame(rows_map)
 
-def to_excel_bytes(df_in: pd.DataFrame, sheet_name="dados") -> bytes:
-    bio = BytesIO()
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        df_in.to_excel(writer, sheet_name=sheet_name, index=False)
-    bio.seek(0)
-    return bio.read()
+# ====== EXIBIÇÃO
+st.subheader("✅ Weak Signals encontrados")
+st.dataframe(df_ws_hits.sort_values("Similarity", ascending=False), use_container_width=True, height=300)
 
-st.subheader("📥 Downloads em Excel")
+st.subheader("✅ Precursores (HTO) encontrados")
+st.dataframe(df_prec_hits.sort_values("Similarity", ascending=False), use_container_width=True, height=300)
 
-colA, colB = st.columns(2)
+st.subheader("✅ Itens da TaxonomiaCP relacionados")
+st.dataframe(df_taxo_hits.sort_values("Similarity", ascending=False), use_container_width=True, height=300)
 
-with colA:
-    st.download_button(
-        "⬇️ Baixar WS x Precursor (com HTO)",
-        data=to_excel_bytes(freq_table, sheet_name="WS_x_Prec_HTO"),
-        file_name="freq_WS_Prec_HTO.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+st.subheader("🗂️ Relatórios pregressos mais similares (MapaTriplo)")
+st.dataframe(df_mapa_hits.sort_values("Similarity", ascending=False), use_container_width=True, height=350)
 
-with colB:
-    st.download_button(
-        "⬇️ Baixar Precursor x HTO",
-        data=to_excel_bytes(freq_table2, sheet_name="Prec_x_HTO"),
-        file_name="freq_Prec_HTO.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# ===== 7) Treemap (alternativa visual) =====
-st.subheader("Treemap Hierárquico")
-fig = px.treemap(
-    df,
-    path=["HTO", "Precursor", "WS_clean"],
-    values=[1]*len(df),
-    hover_data=["Report", "Text"],
-    title="HTO → Precursor → Weak Signal (agrupado, sem o score)"
-)
-st.plotly_chart(fig, use_container_width=True)
+# Pequeno resumo agregado
+st.subheader("📊 Resumo por Precursor e Weak Signal")
+if not df_ws_hits.empty and not df_prec_hits.empty:
+    # junta por parágrafo (para ver coocorrência simples)
+    ws_by_p = df_ws_hits.groupby("ParagraphID")["WeakSignal"].apply(list)
+    prec_by_p = df_prec_hits.groupby("ParagraphID")[["HTO","Precursor"]].apply(lambda df: list(df.itertuples(index=False, name=None)))
+    pairs = []
+    for pid, ws_list in ws_by_p.items():
+        if pid in prec_by_p:
+            for ws in ws_list:
+                for (hto, prec) in prec_by_p[pid]:
+                    pairs.append((hto, prec, ws))
+    if pairs:
+        freq = (pd.DataFrame(pairs, columns=["HTO","Precursor","WeakSignal"])
+                .value_counts().reset_index(name="Freq")
+                .sort_values("Freq", ascending=False))
+        st.dataframe(freq, use_container_width=True, height=260)
+    else:
+        st.info("Nenhuma coocorrência simples (WS ↔ Precursor) no mesmo parágrafo acima dos limites selecionados.")
+else:
+    st.info("Sem hits suficientes para montar o resumo.")
