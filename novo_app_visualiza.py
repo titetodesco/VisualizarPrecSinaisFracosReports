@@ -16,7 +16,7 @@ st.set_page_config(page_title="Análise ESO — WS • Precursores • Taxonomia
 st.title("🔎 Análise Integrada de Eventos (WS • Precursores • Taxonomia • Relatórios)")
 
 # ====== URLs RAW dos artefatos (ajuste para o seu repositório!)
-BASE = "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/artifacts"
+BASE = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/"
 URL_EMB_TAXO = f"{BASE}/emb_taxonomia.parquet"
 URL_EMB_PREC = f"{BASE}/emb_precursores.parquet"
 URL_EMB_WS   = f"{BASE}/emb_weaksignals.parquet"
