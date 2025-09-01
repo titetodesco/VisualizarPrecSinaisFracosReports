@@ -55,9 +55,9 @@ LOCAL_PREFIX = st.sidebar.text_input(
     help="Se você comitou os .parquet no repositório da app, informe a pasta. Ex.: 'artifacts'"
 ).strip().strip("/")
 
-st.sidebar.caption("Se preferir, envie os arquivos .parquet / meta.json abaixo:")
-uploads = st.sidebar.file_uploader("Upload (parquet/json)", type=["parquet","json"], accept_multiple_files=True)
-_upload_map = {f.name: f for f in (uploads or [])}
+# st.sidebar.caption("Se preferir, envie os arquivos .parquet / meta.json abaixo:")
+# uploads = st.sidebar.file_uploader("Upload (parquet/json)", type=["parquet","json"], accept_multiple_files=True)
+# _upload_map = {f.name: f for f in (uploads or [])}
 
 # -----------------------------
 # Helpers
@@ -89,57 +89,34 @@ def _try_remote(name: str) -> pd.DataFrame | None:
         st.warning(f"[remoto] falhou ler {url}: {e}")
     return None
 
-def _try_upload(name: str) -> pd.DataFrame | None:
-    # match exato
-    f = _upload_map.get(name)
-    if f:
-        if name.endswith(".json"):
-            return pd.read_json(f)
-        return pd.read_parquet(f, engine="pyarrow")
-    # heurística por tipo
-    key = name.lower()
-    for nm, f in _upload_map.items():
-        if key.split(".")[0] in nm.lower() or any(k in nm.lower() for k in
-            ["weaksignals","weak","ws","precurso","prec","taxonomia","taxo","mapatriplo","mapa","triple","meta"]):
-            try:
-                if nm.endswith(".json"):
-                    return pd.read_json(f)
-                return pd.read_parquet(f, engine="pyarrow")
-            except:
-                pass
-    return None
-
 def load_artifact_df(name: str) -> pd.DataFrame:
-    df = _try_local(name)
-    if df is not None:
-        return df
-    df = _try_remote(name)
-    if df is not None:
-        return df
-    df = _try_upload(name)
-    if df is not None:
-        return df
-    raise FileNotFoundError(f"Não encontrei '{name}' localmente, remotamente ou via upload.")
+    # tenta local
+    if LOCAL_PREFIX:
+        p = Path(LOCAL_PREFIX) / name
+        if p.exists():
+            return pd.read_parquet(p, engine="pyarrow")
+    # tenta remoto
+    if USE_REMOTE and REMOTE_BASE:
+        base = REMOTE_BASE.rstrip("/")
+        url = f"{base}/{name}" if not REMOTE_PREFIX else f"{base}/{REMOTE_PREFIX}/{name}"
+        return pd.read_parquet(url, engine="pyarrow")
+    raise FileNotFoundError(f"Não encontrei '{name}'. Verifique URL base/pasta local.")
 
 def load_meta() -> dict:
-    # tenta local -> remoto -> upload
+    # local
     if LOCAL_PREFIX:
         p = Path(LOCAL_PREFIX) / "meta.json"
         if p.exists():
             return json.loads(p.read_text(encoding="utf-8"))
+    # remoto
     if USE_REMOTE and REMOTE_BASE:
         base = REMOTE_BASE.rstrip("/")
         url = f"{base}/meta.json" if not REMOTE_PREFIX else f"{base}/{REMOTE_PREFIX}/meta.json"
         try:
             return json.loads(pd.read_json(url, typ="series").to_json())
-        except Exception as e:
-            st.warning(f"[remoto] falhou meta.json: {e}")
-    # upload
-    f = _upload_map.get("meta.json")
-    if f:
-        return json.load(f)
-    # opcional
-    st.info("meta.json não encontrado (seguindo sem ele).")
+        except Exception:
+            pass
+    # se não existir, segue sem meta
     return {}
 
 def df_has_cols(df: pd.DataFrame, cols: list[str]) -> bool:
@@ -234,6 +211,48 @@ with st.spinner("Carregando artefatos…"):
     emb_tax  = load_artifact_df("emb_taxonomia.parquet")
     emb_map  = load_artifact_df("emb_mapatriplo.parquet")
     meta     = load_meta()
+    
+def normalize_taxonomia_cols(df: pd.DataFrame) -> pd.DataFrame:
+    # mapeia variações → padrão
+    colmap = {}
+    cols_lower = {c.lower(): c for c in df.columns}
+
+    # Dimensão
+    for key in ["dimensao", "dimensão", "dimension"]:
+        if key in cols_lower:
+            colmap[cols_lower[key]] = "Dimensao"
+            break
+
+    # Fator
+    for key in ["fator", "factor"]:
+        if key in cols_lower:
+            colmap[cols_lower[key]] = "Fator"
+            break
+
+    # Subfator
+    for key in ["subfator", "sub-fator", "subfactor", "sub-factor"]:
+        if key in cols_lower:
+            colmap[cols_lower[key]] = "Subfator"
+            break
+
+    # Termos (lista de termos usados no embedding)
+    for key in ["_termos", "termos", "termo", "terms", "term"]:
+        if key in cols_lower:
+            colmap[cols_lower[key]] = "_termos"
+            break
+
+    df = df.rename(columns=colmap)
+
+    # garante _text (se faltar, duplica de _termos)
+    if "_text" not in df.columns and "_termos" in df.columns:
+        df["_text"] = df["_termos"].astype(str)
+
+    return df
+
+# após carregar:
+# emb_tax = load_artifact_df("emb_taxonomia.parquet")
+emb_tax = normalize_taxonomia_cols(emb_tax)
+
 
 # sanity check
 for name, df, must in [
