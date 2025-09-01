@@ -555,56 +555,80 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # ================================
-# 🌳 ÁRVORE GRÁFICA — HTO → Precursor → Weak Signal
+# 🌳 ÁRVORE INTERATIVA — HTO → Precursores → Weak Signals
 # ================================
-import plotly.express as px
+from streamlit_echarts import st_echarts
 
 st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals")
 
 if prec_hits.empty or ws_hits.empty:
     st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
 else:
-    # Junta hits (já vêm com idx_par e metadados)
-    join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph"]].drop_duplicates()
-    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph"]].drop_duplicates()
+    # junta hits (já vêm com idx_par)
+    join_ws   = ws_hits[["idx_par","WeakSignal_clean"]].drop_duplicates()
+    join_prec = prec_hits[["idx_par","HTO","Precursor"]].drop_duplicates()
 
-    tree_df = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner")
+    tree_df = join_prec.merge(join_ws, on="idx_par", how="inner")
 
     if tree_df.empty:
         st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
     else:
-        tree_df["value"] = 1
+        # ---- Funções auxiliares
+        def make_node(name, children=None, value=None):
+            node = {"name": name}
+            if value is not None:
+                node["value"] = int(value)
+            if children:
+                node["children"] = children
+            return node
 
-        # ========= Treemap Interativo =========
-        st.subheader("🧩 Treemap Interativo")
-        fig_tree = px.treemap(
-            tree_df,
-            path=["HTO","Precursor","WeakSignal_clean"],
-            values="value",
-            hover_data=["File","Paragraph"],
-            title="HTO → Precursores → Weak Signals"
-        )
-        fig_tree.update_traces(root_color="lightgrey")
-        st.plotly_chart(fig_tree, use_container_width=True)
+        def build_tree(df):
+            tree = []
+            for hto in sorted(df["HTO"].unique()):
+                prec_children = []
+                df_hto = df[df["HTO"] == hto]
+                for prec in sorted(df_hto["Precursor"].unique()):
+                    df_prec = df_hto[df_hto["Precursor"] == prec]
+                    ws_children = []
+                    for ws in sorted(df_prec["WeakSignal_clean"].unique()):
+                        freq = (df_prec["WeakSignal_clean"] == ws).sum()
+                        ws_children.append(make_node(ws, value=freq))
+                    prec_children.append(make_node(prec, children=ws_children, value=len(df_prec)))
+                tree.append(make_node(hto, children=prec_children, value=len(df_hto)))
+            return tree
 
-        # ========= Sunburst Interativo =========
-        st.subheader("🌞 Sunburst Interativo")
-        fig_sun = px.sunburst(
-            tree_df,
-            path=["HTO","Precursor","WeakSignal_clean"],
-            values="value",
-            hover_data=["File","Paragraph"],
-            title="HTO → Precursores → Weak Signals"
-        )
-        st.plotly_chart(fig_sun, use_container_width=True)
+        # ---- Monta dados da árvore
+        tree_data = build_tree(tree_df)
 
-        # ========= Drilldown Auxiliar =========
-        st.subheader("🔎 Detalhes agrupados por HTO e Precursores")
-        grouped = (tree_df.groupby(["HTO","Precursor"], as_index=False)
-                          .agg(Num_WS=("WeakSignal_clean","nunique"),
-                               Total=("value","sum")))
-        st.dataframe(grouped.sort_values(["HTO","Total"], ascending=[True,False]),
-                     use_container_width=True)
+        # ---- Configuração do ECharts
+        options = {
+            "tooltip": {"trigger": "item", "triggerOn": "mousemove"},
+            "series": [{
+                "type": "tree",
+                "data": tree_data,
+                "top": "2%",
+                "left": "5%",
+                "bottom": "2%",
+                "right": "20%",
+                "symbolSize": 12,
+                "label": {
+                    "position": "left",
+                    "verticalAlign": "middle",
+                    "align": "right",
+                    "fontSize": 12
+                },
+                "leaves": {"label": {"position": "right", "align": "left"}},
+                "expandAndCollapse": True,
+                "initialTreeDepth": 2,
+                "animationDuration": 400,
+                "animationDurationUpdate": 400,
+                "roam": True  # permite pan/zoom
+            }]
+        }
+
+        # ---- Renderiza árvore interativa
+        st_echarts(options=options, height="650px")
+
 
 
 # -----------------------------------------------------------------------------
