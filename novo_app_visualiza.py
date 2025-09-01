@@ -555,7 +555,7 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 # ================================
-# 🌳 ÁRVORE INTERATIVA — HTO → Precursor → Weak Signal
+# 🌳 ÁRVORE — HTO → Precursores → Weak Signals (via embeddings)
 # ================================
 from streamlit_echarts import st_echarts
 
@@ -564,7 +564,7 @@ st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals
 if prec_hits.empty or ws_hits.empty:
     st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
 else:
-    # Junta os hits para capturar os WS ligados aos Precursores pelo idx_par
+    # Junta hits (com idx_par)
     join_ws   = ws_hits[["idx_par","WeakSignal_clean","File","Paragraph"]].drop_duplicates()
     join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph"]].drop_duplicates()
 
@@ -573,16 +573,13 @@ else:
     if tree_df.empty:
         st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
     else:
-        # Construir hierarquia HTO -> Precursor -> WeakSignal
+        # Agrupa para construir hierarquia
         tree_dict = {}
-        for _, row in tree_df.iterrows():
-            h = str(row["HTO"])
-            p = str(row["Precursor"])
-            w = str(row["WeakSignal_clean"])
+        for _, r in tree_df.iterrows():
+            h, p, w = r["HTO"], r["Precursor"], r["WeakSignal_clean"]
             tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, 0)
-            tree_dict[h][p][w] += 1  # conta frequência
+            tree_dict[h][p][w] += 1  # frequência
 
-        # Funções auxiliares para montar os nós
         def make_node(name, children=None, value=None):
             node = {"name": name}
             if value is not None:
@@ -592,64 +589,15 @@ else:
             return node
 
         def build_tree(data):
-            nodes = []
-            for hto, precs in sorted(data.items()):
+            out = []
+            for h, precs in data.items():
                 prec_nodes = []
-                for prec, ws_dict in sorted(precs.items()):
-                    ws_nodes = [
-                        make_node(ws, value=freq) for ws, freq in sorted(ws_dict.items())
-                    ]
-                    prec_nodes.append(make_node(prec, children=ws_nodes, value=sum(ws_dict.values())))
-                nodes.append(make_node(hto, children=prec_nodes, value=sum(sum(ws.values()) for ws in precs.values())))
-            return make_node("HTO", children=nodes)
-
-        root_data = build_tree(tree_dict)
-
-        # Configuração do gráfico interativo
-        options = {
-            "tooltip": {
-                "trigger": "item",
-                "triggerOn": "mousemove",
-                "formatter": """function(p) {
-                    var v = (p.value !== undefined) ? ("<br/>Freq: " + p.value) : "";
-                    return "<b>" + p.name + "</b>" + v;
-                }"""
-            },
-            "series": [{
-                "type": "tree",
-                "data": [root_data],
-                "left": "5%",
-                "right": "20%",
-                "top": "5%",
-                "bottom": "5%",
-                "symbol": "circle",
-                "symbolSize": 10,
-                "expandAndCollapse": True,
-                "initialTreeDepth": 3,
-                "animationDuration": 400,
-                "animationDurationUpdate": 400,
-                "label": {
-                    "position": "left",
-                    "verticalAlign": "middle",
-                    "align": "right",
-                    "fontSize": 12
-                },
-                "leaves": {
-                    "label": {"position": "right", "align": "left"}
-                },
-                "emphasis": {"focus": "descendant"},
-                "roam": True
-            }]
-        }
-
-        st.subheader("🌿 Árvore Interativa (colapsável)")
-        event = st_echarts(options=options, height="700px", events=["click"])
-
-        # Drilldown ao clicar em um nó
-        st.subheader("🔎 Detalhes do nó selecionado")
-        if event and "name" in event:
-            st.info(f"Você clicou em: **{event['name']}**")
-
+                for p, ws_dict in precs.items():
+                    ws_nodes = []
+                    for w, freq in ws_dict.items():
+                        ws_nodes.append(make_node(w, value=freq))
+                    prec_nodes.append(make_node(p, children=ws_nodes, value=sum(ws_dict.values())))
+                out.append(make_node(h, children_
 
 
 
