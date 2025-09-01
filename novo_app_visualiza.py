@@ -369,7 +369,7 @@ def attach_context(df_hits: pd.DataFrame, df_pars: pd.DataFrame) -> pd.DataFrame
         df_pars.reset_index(drop=True).reset_index().rename(columns={"index":"idx_par"}),
         on="idx_par", how="left"
     )
-    return out.rename(columns={"Text":"Snippet/Trecho"})
+    return out.rename(columns={"Text":"Snippet"})
 
 ws_hits   = attach_context(ws_hits, df_paras)
 prec_hits = attach_context(prec_hits, df_paras)
@@ -406,7 +406,7 @@ else:
                  .agg(Frequencia=("idx_par","count"))
                  .sort_values(["HTO","Frequencia"], ascending=[True,False]))
     st.dataframe(prec_freq, use_container_width=True)
-    st.dataframe(prec_hits[["HTO","Precursor","Similarity","File","Paragraph","Snippet"]]
+    st.dataframe(prec_hits[["HTO","Precursor","Similarity","File","Paragraph","Snippet/Trecho"]]
                  .sort_values("Similarity", ascending=False)
                  .head(200), use_container_width=True)
 
