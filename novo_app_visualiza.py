@@ -250,7 +250,7 @@ def normalize_taxonomia_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # após carregar:
-# emb_tax = load_artifact_df("emb_taxonomia.parquet")
+emb_tax = load_artifact_df("emb_taxonomia.parquet")
 emb_tax = normalize_taxonomia_cols(emb_tax)
 
 
