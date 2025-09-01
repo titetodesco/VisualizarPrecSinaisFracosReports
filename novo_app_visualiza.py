@@ -564,16 +564,17 @@ st.markdown("## 🌳 Árvore Interativa — HTO → Precursores → Weak Signals
 if prec_hits.empty or ws_hits.empty:
     st.info("Nenhum match de Precursores + WeakSignals para construir a árvore.")
 else:
-    # junta hits (já vêm com idx_par)
+    # Junta hits por parágrafo (relaciona Precursor e WS encontrados no mesmo trecho)
     join_ws   = ws_hits[["idx_par","WeakSignal_clean"]].drop_duplicates()
     join_prec = prec_hits[["idx_par","HTO","Precursor"]].drop_duplicates()
-
-    tree_df = join_prec.merge(join_ws, on="idx_par", how="inner")
+    tree_df   = join_prec.merge(join_ws, on="idx_par", how="inner")
 
     if tree_df.empty:
         st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
     else:
-        # ---- Funções auxiliares
+        # ========================
+        # Monta árvore hierárquica
+        # ========================
         def make_node(name, children=None, value=None):
             node = {"name": name}
             if value is not None:
@@ -582,52 +583,68 @@ else:
                 node["children"] = children
             return node
 
-        def build_tree(df):
-            tree = []
-            for hto in sorted(df["HTO"].unique()):
-                prec_children = []
-                df_hto = df[df["HTO"] == hto]
-                for prec in sorted(df_hto["Precursor"].unique()):
-                    df_prec = df_hto[df_hto["Precursor"] == prec]
-                    ws_children = []
-                    for ws in sorted(df_prec["WeakSignal_clean"].unique()):
-                        freq = (df_prec["WeakSignal_clean"] == ws).sum()
-                        ws_children.append(make_node(ws, value=freq))
-                    prec_children.append(make_node(prec, children=ws_children, value=len(df_prec)))
-                tree.append(make_node(hto, children=prec_children, value=len(df_hto)))
-            return tree
+        tree_dict = {}
+        for _, row in tree_df.iterrows():
+            h = row["HTO"]
+            p = row["Precursor"]
+            w = row["WeakSignal_clean"]
+            tree_dict.setdefault(h, {}).setdefault(p, {}).setdefault(w, 0)
+            tree_dict[h][p][w] += 1
 
-        # ---- Monta dados da árvore
-        tree_data = build_tree(tree_df)
+        echarts_root_children = []
+        for hto, precs in sorted(tree_dict.items()):
+            prec_children = []
+            for prec, ws_dict in sorted(precs.items()):
+                ws_children = [
+                    make_node(ws, value=freq) for ws, freq in sorted(ws_dict.items())
+                ]
+                prec_children.append(make_node(prec, children=ws_children, value=sum(ws_dict.values())))
+            echarts_root_children.append(make_node(hto, children=prec_children, value=sum(sum(ws_dict.values()) for ws_dict in precs.values())))
 
-        # ---- Configuração do ECharts
+        root_data = make_node("HTO", children=echarts_root_children)
+
+        # ========================
+        # Renderiza árvore no ECharts
+        # ========================
         options = {
-            "tooltip": {"trigger": "item", "triggerOn": "mousemove"},
+            "tooltip": {
+                "trigger": "item",
+                "triggerOn": "mousemove",
+                "formatter": """function(p) {
+                    var v = (p.value !== undefined) ? ("<br/>Freq: " + p.value) : "";
+                    return "<b>" + p.name + "</b>" + v;
+                }"""
+            },
             "series": [{
                 "type": "tree",
-                "data": tree_data,
-                "top": "2%",
+                "data": [root_data],
+                "top": "5%",
                 "left": "5%",
-                "bottom": "2%",
+                "bottom": "5%",
                 "right": "20%",
-                "symbolSize": 12,
+                "symbol": "circle",
+                "symbolSize": 10,
+                "orient": "LR",   # layout left-to-right
+                "expandAndCollapse": True,
+                "initialTreeDepth": 3,
+                "animationDuration": 300,
+                "animationDurationUpdate": 300,
                 "label": {
                     "position": "left",
                     "verticalAlign": "middle",
                     "align": "right",
                     "fontSize": 12
                 },
-                "leaves": {"label": {"position": "right", "align": "left"}},
-                "expandAndCollapse": True,
-                "initialTreeDepth": 2,
-                "animationDuration": 400,
-                "animationDurationUpdate": 400,
-                "roam": True  # permite pan/zoom
+                "leaves": {
+                    "label": {"position": "right", "align": "left"}
+                },
+                "emphasis": {"focus": "descendant"},
+                "roam": True
             }]
         }
 
-        # ---- Renderiza árvore interativa
-        st_echarts(options=options, height="650px")
+        st_echarts(options=options, height="700px")
+
 
 
 
