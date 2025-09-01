@@ -1,7 +1,11 @@
-streamlit
-pandas
+streamlit==1.37.0
+pandas>=2.1
+numpy
+sentence-transformers
+scikit-learn
+torch
+PyMuPDF
+python-docx
 openpyxl
-requests
-streamlit-echarts
 plotly
-xlsxwriter
+pyarrow
