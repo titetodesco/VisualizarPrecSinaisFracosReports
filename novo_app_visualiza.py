@@ -42,6 +42,14 @@ DEFAULT_THR = 0.50
 # -----------------------------------------------------------------------------
 # HELPERS (normalização, leitura, embeddings, utilitários)
 # -----------------------------------------------------------------------------
+import re
+
+WS_TAIL_RE = re.compile(r"\s*\((?:0\.\d+|1\.0+)\)\s*$")
+def clean_ws_text(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    return WS_TAIL_RE.sub("", s).strip()
+
 WS_PAREN_RE = re.compile(r"\s*\((?:0\.\d+|1\.0+)\)\s*$")
 def clean_ws_name(s: str) -> str:
     """Remove ' (0.53)' do final do WeakSignal, mantendo apenas o texto."""
@@ -346,16 +354,16 @@ with st.spinner("Calculando similaridades…"):
     
     # limpeza: tira lixo do WeakSignal
     ws_hits["WeakSignal"] = ws_hits["WeakSignal"].astype(str).str.strip()
-    ws_hits["WeakSignal_clean"] = ws_hits["WeakSignal"].map(clean_ws_name)
+    ws_hits["WS"] = ws_hits["WeakSignal"].map(clean_ws_name)
     
     # garante consistência
-    ws_hits = ws_hits[["idx_par","Similarity","WeakSignal_clean"]].merge(
+    ws_hits = ws_hits[["idx_par","Similarity","WS"]].merge(
         df_paras.reset_index(drop=True).reset_index().rename(columns={"index":"idx_par"}),
         on="idx_par", how="left"
     )
     
     # renomeia para uso downstream
-    ws_hits = ws_hits.rename(columns={"WeakSignal_clean":"WeakSignal"})
+    ws_hits = ws_hits.rename(columns={"WS":"WeakSignal"})
 
 
     # Precursores
@@ -375,6 +383,34 @@ with st.spinner("Calculando similaridades…"):
                    .agg(MaxSim=("max_sim","max"), MeanSim=("max_sim","mean"))
                    .sort_values(["MaxSim","MeanSim"], ascending=False)
                    .head(topk_sim_reports))
+
+# ===== Normalização padronizada dos HITS =====
+# 1) Garantir coluna Text (não usar mais Text)
+for df_ in (ws_hits, prec_hits, tax_hits):
+    if df_ is not None and not df_.empty:
+        if "Text" in df_.columns and "Text" not in df_.columns:
+            df_.rename(columns={"Text": "Text"}, inplace=True)
+
+# 2) Padronizar a coluna de Weak Signal em UMA só coluna: WS
+#    - Se existir WS, usa ela; senão WeakSignal; limpa sufixo (0.53)
+if ws_hits is not None and not ws_hits.empty:
+    if "WS" in ws_hits.columns:
+        ws_hits["WS"] = ws_hits["WS"].astype(str)
+    elif "WeakSignal" in ws_hits.columns:
+        ws_hits["WS"] = ws_hits["WeakSignal"].astype(str)
+    else:
+        ws_hits["WS"] = ""
+    ws_hits["WS"] = ws_hits["WS"].map(clean_ws_text)
+
+# 3) Garantir tipos em Precursores/HTO
+if prec_hits is not None and not prec_hits.empty:
+    prec_hits["Precursor"] = prec_hits["Precursor"].astype(str).str.strip()
+    prec_hits["HTO"] = prec_hits["HTO"].astype(str).str.strip()
+
+# 4) Segurança: remova linhas vazias
+if ws_hits is not None and not ws_hits.empty:
+    ws_hits = ws_hits[ws_hits["WS"] != ""].copy()
+
 
 def attach_context(df_hits: pd.DataFrame, df_pars: pd.DataFrame) -> pd.DataFrame:
     if df_hits.empty:
@@ -400,16 +436,18 @@ with c3: st.metric("TaxonomiaCP (hits)", len(tax_hits))
 
 # ----------------- WS -----------------
 st.subheader("🔎 Weak Signals encontrados")
-if ws_hits.empty:
+if ws_hits is None or ws_hits.empty:
     st.info("Nenhum Weak Signal acima do limiar.")
 else:
-    ws_freq = (ws_hits.groupby("WeakSignal_clean", as_index=False)
+    ws_freq = (ws_hits.groupby("WS", as_index=False)
                .agg(Frequencia=("idx_par","count"))
                .sort_values("Frequencia", ascending=False))
     st.dataframe(ws_freq, use_container_width=True)
-    st.dataframe(ws_hits[["WeakSignal","Similarity","File","Paragraph","Trecho"]]
-                 .sort_values("Similarity", ascending=False)
-                 .head(200), use_container_width=True)
+
+    st.dataframe(
+        ws_hits[["WS","Similarity","File","Paragraph","Text"]].head(200),
+        use_container_width=True
+    )
 
 # -------------- PRECURSORES --------------
 st.subheader("🧩 Precursores (HTO) encontrados")
@@ -570,146 +608,121 @@ else:
 
 
 # ================================
-# 🌳 ÁRVORE — HTO → Precursor → Weak Signal (doc + MapaTriplo)
+# 🌳 ÁRVORE — HTO → Precursor → Weak Signal (via embeddings do documento)
 # ================================
-import requests, io
 from streamlit_echarts import st_echarts
 
-st.markdown("## 🌳 Árvore interativa (HTO → Precursores → Weak Signals)")
+st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals (documento)")
 
-# --- Carrega o Mapa Triplo direto do GitHub ---
-URL_TRIPLO = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
-
-@st.cache_data(ttl=600)
-def load_triplo(url=URL_TRIPLO):
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    return pd.read_excel(io.BytesIO(r.content))
-
-mapa_df = load_triplo()
-
-# --- Normalizações ---
-def clean_ws_name(s):
-    import re
-    return re.sub(r"\s*\((?:0\.\d+|1\.0+)\)\s*$", "", str(s)).strip()
-
-# WeakSignals encontrados no doc atual
-ws_hits["WeakSignal"] = ws_hits.get("WeakSignal_clean", ws_hits["WeakSignal"]).map(clean_ws_name)
-prec_hits["Precursor"] = prec_hits["Precursor"].astype(str).str.strip()
-
-# Base do documento (diretos: WS ↔ Precursor do mesmo parágrafo)
-join_ws = ws_hits[["idx_par","WeakSignal","File","Paragraph","Text"]].drop_duplicates()
-join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph","Text"]].drop_duplicates()
-tree_df_direct = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner")
-
-# Base do mapeamento Triplo (indiretos: via planilha)
-mapa_df["WeakSignal"] = mapa_df["WeakSignal"].map(clean_ws_name)
-tree_df_indirect = mapa_df.merge(ws_hits[["WeakSignal"]].drop_duplicates(),
-                                 on="WeakSignal", how="inner")
-
-# Marcação de origem
-tree_df_direct["origem"] = "direto (parágrafo)"
-tree_df_indirect["origem"] = "indireto (MapaTriplo)"
-
-# Unificação
-tree_df = pd.concat([tree_df_direct, tree_df_indirect], ignore_index=True).drop_duplicates()
-
-if tree_df.empty:
-    st.info("Nenhum vínculo WS ↔ Precursor encontrado (direto ou indireto).")
+if prec_hits is None or prec_hits.empty or ws_hits is None or ws_hits.empty:
+    st.info("Nenhum match simultâneo de Precursores e Weak Signals para construir a árvore.")
 else:
-    # ========================= Árvore interativa (ECharts) =========================
-    node_index = {}
+    # 1) Une hits no MESMO parágrafo (liga WS ↔ Precursor)
+    join_ws   = ws_hits[["idx_par","WS","File","Paragraph","Text"]].drop_duplicates()
+    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph","Text"]].drop_duplicates()
+    tree_df = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner").drop_duplicates()
 
-    def add_index(key, rows_idx):
-        node_index.setdefault(key, set()).update(rows_idx)
+    if tree_df.empty:
+        st.warning("Não há interseção entre Precursores e Weak Signals nos mesmos parágrafos.")
+    else:
+        # 2) Constrói a árvore (ECharts)
+        node_index = {}
 
-    def make_node(name, children=None, value=None, extra=None):
-        node = {"name": name}
-        if value is not None:
-            node["value"] = value
-        if extra is not None:
-            node["extra"] = extra
-        if children:
-            node["children"] = children
-        return node
+        def add_index(key, rows_idx):
+            node_index.setdefault(key, set()).update(rows_idx)
 
-    def build_tree(df):
-        root_children = []
-        for hto in sorted(df["HTO"].dropna().unique()):
-            prec_nodes = []
-            df_h = df[df["HTO"]==hto]
-            for prec in sorted(df_h["Precursor"].dropna().unique()):
-                ws_nodes = []
-                df_p = df_h[df_h["Precursor"]==prec]
-                for ws in sorted(df_p["WeakSignal"].dropna().unique()):
-                    df_w = df_p[df_p["WeakSignal"]==ws]
-                    key = f"WS::{hto}::{prec}::{ws}"
-                    add_index(key, df_w.index.tolist())
-                    ws_nodes.append(make_node(
-                        ws,
-                        value=len(df_w),
-                        extra={"type":"ws","key":key}
+        def make_node(name, children=None, value=None, extra=None):
+            node = {"name": name}
+            if value is not None:
+                node["value"] = value
+            if extra is not None:
+                node["extra"] = extra
+            if children:
+                node["children"] = children
+            return node
+
+        def build_tree(df):
+            root_children = []
+            for hto in sorted(df["HTO"].dropna().unique()):
+                df_h = df[df["HTO"] == hto]
+                prec_children = []
+                for prec in sorted(df_h["Precursor"].dropna().unique()):
+                    df_p = df_h[df_h["Precursor"] == prec]
+                    ws_children = []
+                    for ws in sorted(df_p["WS"].dropna().unique()):
+                        df_w = df_p[df_p["WS"] == ws]
+                        key_w = f"WS::{hto}::{prec}::{ws}"
+                        add_index(key_w, df_w.index.tolist())
+                        ws_children.append(make_node(
+                            ws,
+                            value=len(df_w),
+                            extra={"type": "ws", "key": key_w}
+                        ))
+                    key_p = f"PREC::{hto}::{prec}"
+                    add_index(key_p, df_p.index.tolist())
+                    prec_children.append(make_node(
+                        prec,
+                        children=ws_children,
+                        value=len(df_p),
+                        extra={"type": "prec", "key": key_p}
                     ))
-                key_prec = f"PREC::{hto}::{prec}"
-                add_index(key_prec, df_p.index.tolist())
-                prec_nodes.append(make_node(
-                    prec, children=ws_nodes,
-                    value=len(df_p),
-                    extra={"type":"prec","key":key_prec}
+                key_h = f"HTO::{hto}"
+                add_index(key_h, df_h.index.tolist())
+                root_children.append(make_node(
+                    hto,
+                    children=prec_children,
+                    value=len(df_h),
+                    extra={"type": "hto", "key": key_h}
                 ))
-            key_hto = f"HTO::{hto}"
-            add_index(key_hto, df_h.index.tolist())
-            root_children.append(make_node(
-                hto, children=prec_nodes,
-                value=len(df_h),
-                extra={"type":"hto","key":key_hto}
-            ))
-        return make_node("ROOT", children=root_children, value=len(df))
+            return make_node("ROOT", children=root_children, value=len(df))
 
-    root_data = build_tree(tree_df)
+        root_data = build_tree(tree_df)
 
-    st.subheader("🌿 Árvore Interativa (colapsável)")
-    options = {
-        "tooltip": {"trigger":"item","triggerOn":"mousemove",
-            "formatter": """function(p){
-                var v = (p.value!==undefined)?("<br/>Freq: "+p.value):"";
-                return "<b>"+p.name+"</b>"+v;
-            }"""
-        },
-        "series":[{
-            "type":"tree","data":[root_data],
-            "left":"2%","right":"20%","top":"2%","bottom":"2%",
-            "symbol":"circle","symbolSize":10,
-            "expandAndCollapse":True,
-            "initialTreeDepth":2,
-            "animationDuration":300,
-            "animationDurationUpdate":300,
-            "label":{"position":"left","verticalAlign":"middle","align":"right","fontSize":12},
-            "leaves":{"label":{"position":"right","align":"left"}},
-            "emphasis":{"focus":"descendant"},
-            "roam":True
-        }]
-    }
-    event = st_echarts(options=options, height="700px", events={"click":"function(p){return p;}"})
+        st.subheader("🌿 Árvore Interativa (colapsável)")
+        options = {
+            "tooltip": {
+                "trigger": "item", "triggerOn": "mousemove",
+                "formatter": """function(p){
+                    var v = (p.value!==undefined)?("<br/>Freq: "+p.value):"";
+                    return "<b>"+p.name+"</b>"+v;
+                }"""
+            },
+            "series": [{
+                "type": "tree",
+                "data": [root_data],
+                "left": "2%", "right": "20%", "top": "2%", "bottom": "2%",
+                "symbol": "circle", "symbolSize": 10,
+                "expandAndCollapse": True,
+                "initialTreeDepth": 2,
+                "animationDuration": 300,
+                "animationDurationUpdate": 300,
+                "label": {"position":"left","verticalAlign":"middle","align":"right","fontSize":12},
+                "leaves": {"label":{"position":"right","align":"left"}},
+                "emphasis": {"focus":"descendant"},
+                "roam": True
+            }]
+        }
+        event = st_echarts(options=options, height="700px", events={"click": "function(p){return p;}"})
 
-    # ========================= Drilldown =========================
-    st.subheader("🔎 Detalhes do nó selecionado")
-    if event and "name" in event:
-        data = event.get("data", {}) or {}
-        extra = data.get("extra", {})
-        key = extra.get("key")
-        if key and key in node_index:
-            idxs = sorted(node_index[key])
-            detail = tree_df.loc[idxs, ["HTO","Precursor","WeakSignal","origem","File","Paragraph","Text"]].copy()
-            st.write(f"**Nó:** `{event['name']}` — **linhas:** {len(detail)}")
-            st.dataframe(detail, use_container_width=True)
-            st.download_button(
-                "📥 Baixar CSV deste nó",
-                data=detail.to_csv(index=False).encode("utf-8"),
-                file_name="detalhes_no.csv", mime="text/csv"
-            )
-        else:
-            st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
+        # 3) Drilldown do nó clicado
+        st.subheader("🔎 Detalhes do nó selecionado")
+        if event and "name" in event:
+            data = event.get("data", {}) or {}
+            extra = data.get("extra", {})
+            key = extra.get("key")
+            if key and key in node_index:
+                idxs = sorted(node_index[key])
+                detail = tree_df.loc[idxs, ["HTO","Precursor","WS","File","Paragraph","Text"]].copy()
+                st.write(f"**Nó:** `{event['name']}` — **linhas:** {len(detail)}")
+                st.dataframe(detail, use_container_width=True)
+                st.download_button(
+                    "📥 Baixar CSV deste nó",
+                    data=detail.to_csv(index=False).encode("utf-8"),
+                    file_name="detalhes_no.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Clique em um nó de **HTO**, **Precursor** ou **WeakSignal** para ver os detalhes.")
 
 
 
