@@ -185,6 +185,65 @@ with st.spinner("Carregando artefatos (embeddings de dicionários e mapa)…"):
     emb_map  = load_parquet_remote("emb_mapatriplo.parquet")
     meta     = load_meta_remote()
 
+# --- Normalização de colunas do emb_taxonomia ---
+def normalize_emb_tax_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    # mapa de variantes -> destino
+    # (usamos lower() para casar robusto)
+    lower_map = {c.lower(): c for c in df.columns}
+
+    def pick(*cands):
+        for c in cands:
+            if c in lower_map:
+                return lower_map[c]
+        return None
+
+    col_dim  = pick("dimensao", "dimensão", "dimension")
+    col_fat  = pick("fator", "fatores", "factor", "factors")
+    col_sub  = pick("subfator", "subfator 1", "sub-fator", "subfactor")
+    col_bag  = pick("_termos", "bag de termos", "bag of terms", "termos", "terms")
+
+    rename_map = {}
+    if col_dim and col_dim != "Dimensao":
+        rename_map[col_dim] = "Dimensao"
+    if col_fat and col_fat != "Fator":
+        rename_map[col_fat] = "Fator"
+    if col_sub and col_sub != "Subfator":
+        rename_map[col_sub] = "Subfator"
+    if col_bag and col_bag != "_termos":
+        rename_map[col_bag] = "_termos"
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # garante presença mínima
+    for need in ["Dimensao", "Fator", "Subfator", "_termos"]:
+        if need not in df.columns:
+            df[need] = ""
+
+    # _text: se não existir, usa _termos
+    if "_text" not in df.columns:
+        df["_text"] = df["_termos"].astype(str)
+
+    # saneia strings
+    for c in ["Dimensao", "Fator", "Subfator", "_termos", "_text"]:
+        df[c] = df[c].astype(str).str.strip()
+
+    # verifica se há colunas de embedding e_*
+    e_cols = [c for c in df.columns if c.startswith("e_")]
+    if not e_cols:
+        st.error("O arquivo 'emb_taxonomia.parquet' não contém colunas de embedding (e_0, e_1, ...). "
+                 "Regenere os artefatos com o script de preparação.")
+        st.stop()
+
+    return df
+
+emb_tax = normalize_emb_tax_columns(emb_tax)
+
+
 # checagens mínimas
 for name, df, must in [
     ("emb_weaksignals.parquet", emb_ws,   ["_text", "e_0"]),
