@@ -484,37 +484,118 @@ else:
     st.dataframe(sim_reports, use_container_width=True)
 
 
-# ==============================
-# TRI (HTO → Precursor → WS) — TREEMAP & SUNBURST
-# ==============================
-if (prec_hits is not None and not prec_hits.empty) and (ws_hits is not None and not ws_hits.empty):
-    st.subheader("🌳 Treemap / Sunburst — HTO → Precursor → WeakSignal (doc atual)")
-    # vincula por parágrafo
-    join_ws   = ws_hits[["idx_par","WS","File","Paragraph","Text"]].drop_duplicates()
-    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph","Text"]].drop_duplicates()
-    tri = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner").drop_duplicates()
+# ================================
+# 🌳 Treemap / Sunburst — HTO → Precursor → WeakSignal (doc atual)
+# (Bloco robusto com normalização de colunas)
+# ================================
+import plotly.express as px
 
+def pick_col(df, candidates):
+    """Retorna a primeira coluna existente na lista candidates (ou None)."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+if prec_hits is None or prec_hits.empty or ws_hits is None or ws_hits.empty:
+    st.info("Sem interseção suficiente entre Precursores e Weak Signals para treemap/sunburst.")
+else:
+    # ---- 1) Padroniza colunas de WS ----
+    ws_col = pick_col(ws_hits, ["WeakSignal_clean", "WeakSignal", "WS"])
+    if ws_col is None:
+        st.warning("Não encontrei coluna de Weak Signal (WeakSignal/WeakSignal_clean/WS).")
+        ws_col = "WeakSignal"  # evita KeyError adiante
+        ws_hits = ws_hits.assign(WeakSignal="")
+    # renomeia para 'WS'
+    if ws_col != "WS":
+        ws_hits = ws_hits.rename(columns={ws_col: "WS"})
+
+    # padroniza texto do parágrafo para 'Text'
+    text_ws_col = pick_col(ws_hits, ["Text", "Snippet"])
+    if text_ws_col and text_ws_col != "Text":
+        ws_hits = ws_hits.rename(columns={text_ws_col: "Text"})
+
+    # ---- 2) Padroniza colunas de Precursor ----
+    # garante que haja 'HTO' e 'Precursor'
+    for need in ["HTO", "Precursor"]:
+        if need not in prec_hits.columns:
+            prec_hits[need] = ""
+
+    text_prec_col = pick_col(prec_hits, ["Text", "Snippet"])
+    if text_prec_col and text_prec_col != "Text":
+        prec_hits = prec_hits.rename(columns={text_prec_col: "Text"})
+
+    # ---- 3) Seleciona e une por parágrafo (idx_par + File + Paragraph) ----
+    # OBS: usamos File/Paragraph apenas para estabilizar, se existirem.
+    join_ws_cols   = ["idx_par", "WS"]
+    join_prec_cols = ["idx_par", "HTO", "Precursor"]
+
+    if "File" in ws_hits.columns:      join_ws_cols.append("File")
+    if "Paragraph" in ws_hits.columns: join_ws_cols.append("Paragraph")
+    if "Text" in ws_hits.columns:      join_ws_cols.append("Text")
+
+    if "File" in prec_hits.columns:      join_prec_cols.append("File")
+    if "Paragraph" in prec_hits.columns: join_prec_cols.append("Paragraph")
+    if "Text" in prec_hits.columns:      join_prec_cols.append("Text")
+
+    join_ws   = ws_hits[join_ws_cols].drop_duplicates()
+    join_prec = prec_hits[join_prec_cols].drop_duplicates()
+
+    # Faz o merge pela chave mínima garantida (idx_par), e pela interseção das demais
+    merge_keys = ["idx_par"]
+    if "File" in join_ws.columns and "File" in join_prec.columns:
+        merge_keys.append("File")
+    if "Paragraph" in join_ws.columns and "Paragraph" in join_prec.columns:
+        merge_keys.append("Paragraph")
+
+    tri = join_prec.merge(join_ws, on=merge_keys, how="inner")
+
+    # ---- 4) Saneia strings e remove vazios ----
+    for c in ["HTO", "Precursor", "WS"]:
+        if c not in tri.columns:
+            tri[c] = ""
+        tri[c] = tri[c].astype(str).str.strip()
+
+    tri = tri[(tri["HTO"] != "") & (tri["Precursor"] != "") & (tri["WS"] != "")]
     if tri.empty:
-        st.info("Sem interseção WS ↔ Precursor no mesmo parágrafo para a visualização hierárquica.")
-    else        :
-        tri["value"] = 1
+        st.warning("Após saneamento, não há combinações HTO/Precursor/WeakSignal válidas para o treemap.")
+    else:
+        # ---- 5) Treemap ----
+        tri["value"] = 1  # cada ocorrência conta 1
+        hover_cols = [c for c in ["File", "Paragraph", "Text"] if c in tri.columns]
+
+        st.subheader("🌳 Treemap (HTO → Precursor → WeakSignal)")
         fig_tree = px.treemap(
             tri,
-            path=["HTO","Precursor","WS"],
+            path=["HTO", "Precursor", "WS"],
             values="value",
-            hover_data=["File","Paragraph","Text"],
+            hover_data=hover_cols,
             title="Treemap hierárquico (WeakSignals por Precursor/HTO)"
         )
         st.plotly_chart(fig_tree, use_container_width=True)
 
+        # ---- 6) Sunburst ----
+        st.subheader("🌞 Sunburst (HTO → Precursor → WeakSignal)")
         fig_sun = px.sunburst(
             tri,
-            path=["HTO","Precursor","WS"],
+            path=["HTO", "Precursor", "WS"],
             values="value",
-            hover_data=["File","Paragraph","Text"],
+            hover_data=hover_cols,
             title="Sunburst (WeakSignals por Precursor/HTO)"
         )
         st.plotly_chart(fig_sun, use_container_width=True)
+
+        # ---- 7) (Opcional) visão textual compacta ----
+        with st.expander("📂 Árvore (texto resumido)"):
+            for hto in sorted(tri["HTO"].unique()):
+                st.markdown(f"**{hto}**")
+                tri_h = tri[tri["HTO"] == hto]
+                for prec in sorted(tri_h["Precursor"].unique()):
+                    st.markdown(f"- {prec}")
+                    ws_list = sorted(tri_h[tri_h["Precursor"] == prec]["WS"].unique().tolist())
+                    if ws_list:
+                        st.markdown("  - " + "; ".join(ws_list[:30]))
+
 
 
 # ==============================
