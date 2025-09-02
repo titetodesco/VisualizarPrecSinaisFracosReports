@@ -445,7 +445,7 @@ else:
     st.dataframe(ws_freq, use_container_width=True)
 
     st.dataframe(
-        ws_hits[["WS","Similarity","File","Paragraph","Text"]].head(200),
+        ws_hits[["WS","Similarity","File","Paragraph","Snippet"]].head(200),
         use_container_width=True
     )
 
