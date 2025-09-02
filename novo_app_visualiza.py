@@ -597,128 +597,210 @@ else:
                         st.markdown("  - " + "; ".join(ws_list[:30]))
 
 
+# ================================
+# 🌳 ÁRVORE INTERATIVA (ECharts) — HTO → Precursor → Weak Signal
+# Usa MapaTriplo_tratado.xlsx para filtrar WS por Precursor e marcar origem
+# ================================
+import io, re, requests
+from streamlit_echarts import st_echarts
 
-# ==============================
-# 🌳 ÁRVORE INTERATIVA — HTO → Precursor → WS
-# ==============================
-st.markdown("## 🌳 Árvore: HTO → Precursores → Weak Signals (documento)")
+MAPTRIP_URL = "https://raw.githubusercontent.com/titetodesco/VisualizarPrecSinaisFracosReports/main/MapaTriplo_tratado.xlsx"
 
+def _pick(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+WS_LABEL_RE = re.compile(r"^\s*WeakSignal\s+", re.I)
+
+def clean_ws(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = WS_LABEL_RE.sub("", s)
+    return s.strip()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_mapatriplo(url: str) -> pd.DataFrame:
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    bio = io.BytesIO(r.content)
+    df = pd.read_excel(bio)
+    # Normaliza nomes de colunas esperadas
+    col_hto  = _pick(df, ["HTO","Hto","hto"])
+    col_prec = _pick(df, ["Precursor","precursor","Precursores"])
+    col_ws   = _pick(df, ["WeakSignal","WS","Weak Signal","WeakSignal_clean"])
+    if not col_prec or not col_ws:
+        raise RuntimeError("MapaTriplo precisa ter colunas 'Precursor' e 'WeakSignal'.")
+    out = df.copy()
+    out = out.rename(columns={col_hto:"HTO", col_prec:"Precursor", col_ws:"WS"})
+    out["HTO"] = out.get("HTO", pd.Series(index=out.index, dtype=str)).astype(str).str.strip()
+    out["Precursor"] = out["Precursor"].astype(str).str.strip()
+    out["WS"] = out["WS"].astype(str).map(clean_ws)
+    out = out.replace({"HTO":{"nan":""}})
+    return out[["HTO","Precursor","WS"]].dropna(subset=["Precursor","WS"]).drop_duplicates()
+
+# ---- Proteções básicas
 if prec_hits is None or prec_hits.empty or ws_hits is None or ws_hits.empty:
-    st.info("Nenhum match simultâneo de Precursores e Weak Signals para construir a árvore.")
+    st.info("Sem interseção suficiente entre Precursores e Weak Signals para montar a árvore.")
 else:
-    # monta base canônica p/ árvore
-    join_ws   = ws_hits[["idx_par","WS","File","Paragraph","Text"]].drop_duplicates()
-    join_prec = prec_hits[["idx_par","HTO","Precursor","File","Paragraph","Text"]].drop_duplicates()
-    tree_df = join_prec.merge(join_ws, on=["idx_par","File","Paragraph"], how="inner").drop_duplicates()
+    # ===== 1) Padroniza/limpa colunas de entrada
+    # WS dos hits do documento
+    ws_col = _pick(ws_hits, ["WS","WeakSignal_clean","WeakSignal"])
+    if ws_col != "WS":
+        ws_hits = ws_hits.rename(columns={ws_col:"WS"})
+    ws_hits["WS"] = ws_hits["WS"].astype(str).map(clean_ws)
 
-    if tree_df.empty:
-        st.warning("Não há interseção entre Precursores e WeakSignals nos mesmos parágrafos.")
+    # Texto do parágrafo (opcional para drilldown)
+    txt_col = _pick(ws_hits, ["Text","Snippet"])
+    if txt_col and txt_col != "Text":
+        ws_hits = ws_hits.rename(columns={txt_col:"Text"})
+
+    # Precursores
+    for need in ["HTO","Precursor"]:
+        if need not in prec_hits.columns:
+            prec_hits[need] = ""
+    txtp_col = _pick(prec_hits, ["Text","Snippet"])
+    if txtp_col and txtp_col != "Text":
+        prec_hits = prec_hits.rename(columns={txtp_col:"Text"})
+
+    # ===== 2) Merge direto por parágrafo (pares que realmente co-ocorrem)
+    # chave mínima: idx_par (+ File/Paragraph se existirem)
+    ws_on = ["idx_par"]
+    prec_on = ["idx_par"]
+    for k in ["File","Paragraph"]:
+        if k in ws_hits.columns and k in prec_hits.columns:
+            ws_on.append(k); prec_on.append(k)
+
+    ws_doc = ws_hits[ws_on + ["WS"]].drop_duplicates()
+    prec_doc = prec_hits[prec_on + ["HTO","Precursor"]].drop_duplicates()
+    tri_direct = prec_doc.merge(ws_doc, left_on=prec_on, right_on=ws_on, how="inner")[["HTO","Precursor","WS"]]
+
+    # ===== 3) Carrega MapaTriplo e filtra WS presentes no documento
+    maptrip = load_mapatriplo(MAPTRIP_URL)
+    ws_doc_unique = set(ws_doc["WS"].unique().tolist())
+    maptrip_doc = maptrip[maptrip["WS"].isin(ws_doc_unique)].copy()
+
+    # ===== 4) Combina e marca origem (direto / indireto / ambos)
+    # - left: pares vindos do documento (co-ocorrência real)
+    # - right: pares do MapaTriplo que têm WS presente no documento
+    comb = tri_direct.merge(
+        maptrip_doc, on=["Precursor","WS"], how="outer", suffixes=("_dir","_map"), indicator=True
+    )
+    # define HTO preferindo o do documento; se faltar, usa o do mapa
+    comb["HTO"] = comb["HTO_dir"].where(comb["HTO_dir"].notna() & (comb["HTO_dir"].astype(str)!=""), comb["HTO_map"])
+    comb["origem"] = comb["_merge"].map({"left_only":"direto","right_only":"indireto","both":"ambos"})
+    comb = comb[["HTO","Precursor","WS","origem"]].dropna(subset=["Precursor","WS"]).drop_duplicates()
+
+    # ===== 5) Frequência por (Precursor, WS)
+    # conta ocorrências reais (no doc) — pares “indireto” recebem 1
+    if not tri_direct.empty:
+        freq_dir = (tri_direct.groupby(["Precursor","WS"], as_index=False)
+                             .size().rename(columns={"size":"freq_dir"}))
     else:
-        node_index: dict[str, set[int]] = {}
+        freq_dir = pd.DataFrame(columns=["Precursor","WS","freq_dir"])
 
-        def add_index(key: str, rows_idx):
-            node_index.setdefault(key, set()).update(rows_idx)
+    comb = comb.merge(freq_dir, on=["Precursor","WS"], how="left")
+    comb["freq"] = comb["freq_dir"].fillna(1).astype(int)
 
-        def make_node(name, children=None, value=None, extra=None):
-            node = {"name": str(name)}
-            if value is not None:
-                node["value"] = int(value)
-            if extra is not None:
-                node["extra"] = extra
-            if children:
-                node["children"] = children
-            return node
+    # ===== 6) Índice para drilldown (opcional)
+    # mapeia chaves para as linhas do documento (quando for 'direto' ou 'ambos')
+    idx_map = {}
+    if not tri_direct.empty:
+        # precisamos saber quais parágrafos formam cada (Precursor, WS)
+        if {"idx_par","Precursor"}.issubset(prec_hits.columns) and {"idx_par","WS"}.issubset(ws_hits.columns):
+            pw = prec_hits[["idx_par","Precursor"]].drop_duplicates().merge(
+                ws_hits[["idx_par","WS"]].drop_duplicates(), on="idx_par", how="inner"
+            )
+            pw = pw.merge(comb[["Precursor","WS"]], on=["Precursor","WS"], how="inner")
+            for (prec, ws), g in pw.groupby(["Precursor","WS"]):
+                idx_map[f"{prec}::{ws}"] = set(g["idx_par"].tolist())
 
-        def build_tree(df: pd.DataFrame):
-            root_children = []
-            for hto in sorted(df["HTO"].dropna().astype(str).unique()):
-                df_h = df[df["HTO"] == hto]
-                prec_children = []
-                for prec in sorted(df_h["Precursor"].dropna().astype(str).unique()):
-                    df_p = df_h[df_h["Precursor"] == prec]
-                    ws_children = []
-                    for ws in sorted(df_p["WS"].dropna().astype(str).unique()):
-                        df_w = df_p[df_p["WS"] == ws]
-                        key_w = f"WS::{hto}::{prec}::{ws}"
-                        add_index(key_w, df_w.index.tolist())
-                        ws_children.append(make_node(
-                            ws,
-                            value=len(df_w),
-                            extra={"type": "ws", "key": key_w}
-                        ))
-                    key_p = f"PREC::{hto}::{prec}"
-                    add_index(key_p, df_p.index.tolist())
-                    prec_children.append(make_node(
-                        prec,
-                        children=ws_children,
-                        value=len(df_p),
-                        extra={"type": "prec", "key": key_p}
-                    ))
-                key_h = f"HTO::{hto}"
-                add_index(key_h, df_h.index.tolist())
-                root_children.append(make_node(
-                    hto,
-                    children=prec_children,
-                    value=len(df_h),
-                    extra={"type": "hto", "key": key_h}
+    # ===== 7) Monta estrutura de árvore para ECharts (HTO → Precursor → WS)
+    def make_node(name, children=None, value=None, extra=None):
+        node = {"name": name}
+        if value is not None: node["value"] = int(value)
+        if extra is not None: node["extra"] = extra
+        if children: node["children"] = children
+        return node
+
+    tree_children = []
+    for hto in sorted(comb["HTO"].fillna("HTO").unique()):
+        comb_h = comb[comb["HTO"].fillna("HTO") == hto]
+        prec_children = []
+        for prec in sorted(comb_h["Precursor"].unique()):
+            comb_p = comb_h[comb_h["Precursor"] == prec]
+            ws_children = []
+            for _, r in comb_p.sort_values(["origem","WS"]).iterrows():
+                key = f"{prec}::{r['WS']}"
+                ws_children.append(make_node(
+                    r["WS"],
+                    value=int(r["freq"]),
+                    extra={"type":"ws", "key": key, "origem": r["origem"]}
                 ))
-            return make_node("ROOT", children=root_children, value=len(df))
+            prec_children.append(make_node(
+                prec,
+                children=ws_children,
+                value=int(comb_p["freq"].sum()),
+                extra={"type":"prec","key": f"PREC::{hto}::{prec}"}
+            ))
+        tree_children.append(make_node(
+            hto if hto else "HTO",
+            children=prec_children,
+            value=int(comb_h["freq"].sum()),
+            extra={"type":"hto","key": f"HTO::{hto or 'HTO'}"}
+        ))
 
-        root_data = build_tree(tree_df)
+    root = make_node("HTO", children=tree_children)
 
-        st.subheader("🌿 Árvore Interativa (colapsável)")
-        options = {
-            "tooltip": {
-                "trigger": "item",
-                "triggerOn": "mousemove",
-                "formatter": """function(p){
-                    var v = (p.value!==undefined)?("<br/>Freq: "+p.value):"";
-                    return "<b>"+p.name+"</b>"+v;
-                }"""
-            },
-            "series": [{
-                "type": "tree",
-                "data": [root_data],
-                "left": "2%", "right": "20%", "top": "2%", "bottom": "2%",
-                "symbol": "circle",
-                "symbolSize": 10,
-                "expandAndCollapse": True,
-                "initialTreeDepth": 2,
-                "animationDuration": 300,
-                "animationDurationUpdate": 300,
-                "label": {"position":"left","verticalAlign":"middle","align":"right","fontSize":12},
-                "leaves": {"label":{"position":"right","align":"left"}},
-                "emphasis": {"focus":"descendant"},
-                "roam": True
-            }]
-        }
+    # ===== 8) Desenha a árvore
+    st.subheader("🌿 Árvore Interativa — HTO → Precursores → Weak Signals")
+    options = {
+        "tooltip": {
+            "trigger": "item",
+            "triggerOn": "mousemove",
+            # JS de tooltip: mostra nome e frequência
+            "formatter": """function(p){
+                var v = (p.value !== undefined) ? ("<br/>Frequência: " + p.value) : "";
+                return "<b>" + p.name + "</b>" + v;
+            }"""
+        },
+        "series": [{
+            "type": "tree",
+            "data": [root],
+            "left": "2%", "right": "20%", "top": "2%", "bottom": "2%",
+            "symbol": "circle", "symbolSize": 10,
+            "expandAndCollapse": True,
+            "initialTreeDepth": 2,
+            "animationDuration": 300,
+            "animationDurationUpdate": 300,
+            "label": {"position": "left", "verticalAlign": "middle", "align": "right", "fontSize": 12},
+            "leaves": {"label": {"position": "right", "align": "left"}},
+            "emphasis": {"focus": "descendant"},
+            "roam": True
+        }]
+    }
+    event = st_echarts(options=options, height="720px", events={"click": "function (p) { return p; }"})
 
-        event = st_echarts(
-            options=options,
-            height="700px",
-            events={"click": "function(p){return p;}"}
-        )
-
-        st.subheader("🔎 Detalhes do nó selecionado")
-        if event and "name" in event:
-            data = event.get("data", {}) or {}
-            extra = data.get("extra", {})
+    # ===== 9) Drilldown ao clicar num WS
+    st.subheader("🔎 Detalhes do nó selecionado")
+    if event and "data" in event and event["data"] and "extra" in event["data"]:
+        extra = event["data"]["extra"] or {}
+        if extra.get("type") == "ws":
             key = extra.get("key")
-
-            if key and key in node_index:
-                idxs = sorted(node_index[key])
-                cols_show = [c for c in ["HTO","Precursor","WS","File","Paragraph","Text"] if c in tree_df.columns]
-                detail = tree_df.loc[idxs, cols_show].copy()
-                st.write(f"**Nó:** `{event['name']}` — **linhas:** {len(detail)}")
-                st.dataframe(detail, use_container_width=True)
-                st.download_button(
-                    "📥 Baixar CSV deste nó",
-                    data=detail.to_csv(index=False).encode("utf-8"),
-                    file_name="detalhes_no.csv",
-                    mime="text/csv"
-                )
+            idxs = sorted(idx_map.get(key, []))
+            if idxs:
+                # mostra os parágrafos onde esse par (Precursor, WS) ocorreu (direto/ambos)
+                cols = [c for c in ["File","Paragraph","Text"] if c in ws_hits.columns]
+                df_detail = (df_paras.loc[idxs, ["File","Paragraph","Text"]] if cols==["File","Paragraph","Text"]
+                             else df_paras.loc[idxs, cols]) if "df_paras" in globals() else None
+                st.write(f"**WS:** `{event['data']['name']}` — **Origem:** `{extra.get('origem')}` — **Ocorrências (diretas):** {len(idxs)}")
+                if df_detail is not None:
+                    st.dataframe(df_detail, use_container_width=True)
             else:
-                st.info("Clique em um nó de **HTO**, **Precursor** ou **Weak Signal** para ver os detalhes.")
+                st.info(f"**WS:** `{event['data']['name']}` — **Origem:** `{extra.get('origem')}` (sem parágrafos diretos; vínculo do MapaTriplo).")
+        else:
+            st.caption("Dica: clique no nó do Weak Signal para ver os detalhes.")
+
 
 
 # ==============================
